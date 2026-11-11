@@ -1,0 +1,168 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: vuln-scan
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  description: >-
+    Runs static Go analysis (go vet) and audits the container environment and
+    /workspace filesystem to verify whether ambient Git/OCI secrets are mounted
+    inside the sandbox.
+  workspaces:
+    - name: source
+      description: Shared pipeline workspace containing cloned source and warm GOCACHE.
+    - name: creds
+      optional: true
+      description: Optional mounted Git/OCI Secret workspace inspected by the security posture audit.
+  results:
+    - name: secret-posture
+      description: ZERO_AMBIENT_SECRETS when no credentials exist in sandbox; AMBIENT_SECRET_MOUNTED otherwise.
+    - name: scan-report
+      description: Structured JSON report summarizing go vet and zero-secret audit findings.
+  steps:
+    - name: vet-and-secret-audit
+      image: golang:1.26-bookworm
+      script: |
+        #!/bin/sh
+        set -eu
+
+        export GOCACHE="${TEKTON_GOCACHE_OVERRIDE:-$(workspaces.source.path)/.gocache}"
+        export GOPROXY=off
+        export GOSUMDB=off
+        export GOTOOLCHAIN=local
+        export CGO_ENABLED=0
+
+        echo "==> Running static analysis (go vet ./...)"
+        (cd "$(workspaces.source.path)/app" && go vet ./...)
+
+        AUDIT_SRC=$(mktemp "${TMPDIR:-/tmp}/audit-XXXXXX.go")
+        trap 'rm -f "${AUDIT_SRC}"' EXIT
+        cat > "${AUDIT_SRC}" << 'EOF'
+        package main
+
+        import (
+        	"encoding/json"
+        	"fmt"
+        	"io/fs"
+        	"os"
+        	"path/filepath"
+        	"sort"
+        	"strings"
+        )
+
+        type report struct {
+        	GoVet                  string   `json:"goVet"`
+        	SecretPosture          string   `json:"secretPosture"`
+        	AmbientCredentialFiles []string `json:"ambientCredentialFiles"`
+        	SecretEnvVars          []string `json:"secretEnvVars"`
+        	GitConfigClean         bool     `json:"gitConfigClean"`
+        }
+
+        func main() {
+        	sourceDir := os.Args[1]
+        	credsDir := os.Args[2]
+        	postureOut := os.Args[3]
+        	reportOut := os.Args[4]
+
+        	var credFiles []string
+        	var secretEnvs []string
+
+        	// 1. Inspect environment variable names (never log values).
+        	for _, entry := range os.Environ() {
+        		name, _, _ := strings.Cut(entry, "=")
+        		upper := strings.ToUpper(name)
+        		if strings.HasPrefix(upper, "GIT_OCI_") ||
+        			upper == "REGISTRY_PASSWORD" ||
+        			upper == "DOCKER_AUTH_CONFIG" ||
+        			upper == "GITHUB_TOKEN" {
+        			secretEnvs = append(secretEnvs, name)
+        		}
+        	}
+        	sort.Strings(secretEnvs)
+
+        	// 2. Inspect optional creds workspace and well-known credential locations.
+        	scanRoots := []string{filepath.Dir(sourceDir), "/tekton/creds"}
+        	if credsDir != "" {
+        		scanRoots = append(scanRoots, credsDir)
+        	}
+        	seen := map[string]bool{}
+        	for _, root := range scanRoots {
+        		info, err := os.Stat(root)
+        		if err != nil || !info.IsDir() {
+        			continue
+        		}
+        		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+        			if walkErr != nil || d.IsDir() {
+        				if d != nil && d.IsDir() && d.Name() == ".gocache" {
+        					return filepath.SkipDir
+        				}
+        				return nil
+        			}
+        			slash := filepath.ToSlash(p)
+        			base := filepath.Base(slash)
+        			isCredPath := (credsDir != "" && strings.HasPrefix(slash, filepath.ToSlash(credsDir)+"/")) ||
+        				strings.HasPrefix(slash, "/tekton/creds/") ||
+        				base == ".git-credentials" ||
+        				base == ".netrc" ||
+        				strings.HasSuffix(slash, ".docker/config.json")
+        			if isCredPath && !strings.HasPrefix(base, "..") && !seen[slash] {
+        				seen[slash] = true
+        				credFiles = append(credFiles, slash)
+        			}
+        			return nil
+        		})
+        	}
+        	sort.Strings(credFiles)
+
+        	// 3. Verify .git/config did not persist Authorization headers or embedded passwords.
+        	gitConfigClean := true
+        	if cfgBytes, err := os.ReadFile(filepath.Join(sourceDir, "app", ".git", "config")); err == nil {
+        		lower := strings.ToLower(string(cfgBytes))
+        		if strings.Contains(lower, "authorization:") || strings.Contains(lower, "extraheader") || strings.Contains(lower, "bearer ") {
+        			gitConfigClean = false
+        			credFiles = append(credFiles, filepath.ToSlash(filepath.Join(sourceDir, "app", ".git", "config")))
+        		}
+        	}
+
+        	posture := "ZERO_AMBIENT_SECRETS"
+        	if len(credFiles) > 0 || len(secretEnvs) > 0 || !gitConfigClean {
+        		posture = "AMBIENT_SECRET_MOUNTED"
+        	}
+        	if credFiles == nil {
+        		credFiles = []string{}
+        	}
+        	if secretEnvs == nil {
+        		secretEnvs = []string{}
+        	}
+
+        	rep := report{
+        		GoVet:                  "passed",
+        		SecretPosture:          posture,
+        		AmbientCredentialFiles: credFiles,
+        		SecretEnvVars:          secretEnvs,
+        		GitConfigClean:         gitConfigClean,
+        	}
+        	repBytes, err := json.Marshal(rep)
+        	if err != nil {
+        		fmt.Fprintf(os.Stderr, "marshal report: %v\n", err)
+        		os.Exit(1)
+        	}
+        	if err := os.WriteFile(postureOut, []byte(posture), 0o644); err != nil {
+        		fmt.Fprintf(os.Stderr, "write posture result: %v\n", err)
+        		os.Exit(1)
+        	}
+        	if err := os.WriteFile(reportOut, repBytes, 0o644); err != nil {
+        		fmt.Fprintf(os.Stderr, "write scan-report result: %v\n", err)
+        		os.Exit(1)
+        	}
+        	fmt.Printf("==> Security audit complete: posture=%s ambientFiles=%d secretEnvVars=%d\n",
+        		posture, len(credFiles), len(secretEnvs))
+        }
+        EOF
+
+        go run "${AUDIT_SRC}" \
+          "$(workspaces.source.path)" \
+          "$(workspaces.creds.path)" \
+          "$(results.secret-posture.path)" \
+          "$(results.scan-report.path)"

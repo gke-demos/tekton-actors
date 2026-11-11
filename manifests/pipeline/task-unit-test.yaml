@@ -1,0 +1,43 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: unit-test
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  description: >-
+    Runs offline Go unit tests against /workspace/source/app reusing the warm GOCACHE.
+  workspaces:
+    - name: source
+      description: Shared pipeline workspace containing cloned source and warm GOCACHE.
+  results:
+    - name: test-summary
+      description: Concise summary of executed Go unit tests.
+  steps:
+    - name: go-test
+      image: golang:1.26-bookworm
+      script: |
+        #!/bin/sh
+        set -eu
+
+        export GOCACHE="${TEKTON_GOCACHE_OVERRIDE:-$(workspaces.source.path)/.gocache}"
+        export GOPROXY=off
+        export GOSUMDB=off
+        export GOTOOLCHAIN=local
+        export CGO_ENABLED=0
+
+        cd "$(workspaces.source.path)/app"
+        TMP_LOG=$(mktemp)
+        echo "==> Running unit tests in $(workspaces.source.path)/app"
+        if ! go test -v ./... > "${TMP_LOG}" 2>&1; then
+          cat "${TMP_LOG}"
+          rm -f "${TMP_LOG}"
+          exit 1
+        fi
+        cat "${TMP_LOG}"
+        PASS_COUNT=$(grep -c '^    --- PASS:\|^--- PASS:' "${TMP_LOG}" || true)
+        rm -f "${TMP_LOG}"
+
+        SUMMARY="PASS (${PASS_COUNT} checks green)"
+        printf '%s' "${SUMMARY}" > "$(results.test-summary.path)"
+        echo "==> ${SUMMARY}"

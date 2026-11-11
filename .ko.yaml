@@ -1,4 +1,6 @@
 defaultBaseImage: gcr.io/distroless/static-debian12:nonroot
+baseImageOverrides:
+  github.com/gke-demos/tekton-actors/cmd/git-oci-server: cgr.dev/chainguard/git:latest
 defaultPlatforms:
   - linux/amd64
 defaultEnv:
@@ -8,6 +10,18 @@ defaultLdflags:
 builds:
   - id: step-supervisor
     main: ./cmd/step-supervisor
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+  - id: approvalgate-controller
+    main: ./cmd/approvalgate-controller
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+  - id: git-oci-server
+    main: ./cmd/git-oci-server
     env:
       - CGO_ENABLED=0
     ldflags:

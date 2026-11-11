@@ -1,0 +1,137 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tekton-actors
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+    # Required by NetworkPolicy/ate-api-server so controllers/UI in tekton-actors
+    # can dial api.ate-system.svc:443.
+    ate.dev/api-access: "true"
+---
+# Bootstrap Secret consumed by git-oci-server AND resolved out-of-band by
+# ate-system/k8s-credential-provider via ate-secret://k8s.io/default/tekton-actors/git-oci-auth/token.
+# Rotate this token per cluster during deployment (e.g., openssl rand -hex 32).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-oci-auth
+  namespace: tekton-actors
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+type: Opaque
+stringData:
+  token: REPLACE_WITH_RANDOM_CLUSTER_TOKEN
+---
+# Authorizes atespace "tekton-actors" to resolve ate-secret:// URIs referencing
+# Kubernetes Secrets in namespace "tekton-actors" (restart deployment/k8s-credential-provider
+# in ate-system after first applying or updating this ConfigMap).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-credential-provider-namespace-policy
+  namespace: ate-system
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+data:
+  namespace-policy.yaml: |
+    policies:
+    - atespace: tekton-actors
+      allowedNamespaces:
+      - tekton-actors
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-oci
+  namespace: tekton-actors
+  labels:
+    app: git-oci
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: git-oci
+  template:
+    metadata:
+      labels:
+        app: git-oci
+        app.kubernetes.io/part-of: tekton-actors
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: git-oci-server
+          image: ko://github.com/gke-demos/tekton-actors/cmd/git-oci-server
+          args:
+            - --listen=:8080
+            - --data-dir=/var/lib/git-oci
+            - --repo-name=fulfillment-api
+          env:
+            - name: GIT_OCI_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-oci-auth
+                  key: token
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/git-oci
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-oci
+  namespace: tekton-actors
+  labels:
+    app: git-oci
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  type: ClusterIP
+  selector:
+    app: git-oci
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

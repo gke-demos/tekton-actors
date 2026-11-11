@@ -1,0 +1,78 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: clone-and-build
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  description: >-
+    Clones fulfillment-api from the in-cluster Git Smart-HTTP server, warms GOCACHE
+    inside the shared workspace, and builds a static Linux binary. Supports both
+    per-Actor EgressPolicy credential injection (zero ambient secrets) and mounted
+    Secret workspaces (Pod+PVC baseline).
+  params:
+    - name: git-url
+      type: string
+      default: http://git-oci.tekton-actors.svc.cluster.local/repo/fulfillment-api.git
+      description: Git Smart-HTTP URL of the repository to build.
+    - name: inject-bug
+      type: string
+      default: "false"
+      description: When "true", checks out the "buggy" branch with an off-by-one cent discount regression.
+  workspaces:
+    - name: source
+      description: Shared pipeline workspace storing source code, warm GOCACHE, and compiled artifacts.
+    - name: creds
+      optional: true
+      description: Optional mounted Git/OCI Secret workspace (bound in Pod+PVC mode; omitted in Actor mode).
+  results:
+    - name: commit-sha
+      description: Checked-out Git commit SHA.
+    - name: binary-sha256
+      description: SHA-256 digest of the compiled fulfillment-api binary.
+  steps:
+    - name: clone-and-compile
+      image: golang:1.26-bookworm
+      script: |
+        #!/bin/sh
+        set -eu
+
+        export GOCACHE="${TEKTON_GOCACHE_OVERRIDE:-$(workspaces.source.path)/.gocache}"
+        export GOPROXY=off
+        export GOSUMDB=off
+        export GOTOOLCHAIN=local
+        export CGO_ENABLED=0
+
+        if [ "$(workspaces.creds.bound)" = "true" ] && [ -f "$(workspaces.creds.path)/token" ]; then
+          AUTH_TOKEN=$(tr -d '\r\n' < "$(workspaces.creds.path)/token")
+          CRED_MODE="mounted-secret"
+        else
+          AUTH_TOKEN="ate-placeholder"
+          CRED_MODE="ate-egress"
+        fi
+
+        BRANCH="main"
+        if [ "$(params.inject-bug)" = "true" ]; then
+          BRANCH="buggy"
+        fi
+
+        rm -rf "$(workspaces.source.path)/app"
+        mkdir -p "$(workspaces.source.path)/bin" "$(workspaces.source.path)/.gocache" "$(workspaces.source.path)/.build-meta"
+
+        echo "==> Cloning $(params.git-url) (branch=${BRANCH}, authMode=${CRED_MODE})"
+        GIT_TERMINAL_PROMPT=0 git \
+          -c "http.extraHeader=Authorization: Bearer ${AUTH_TOKEN}" \
+          -c "http.extraHeader=X-Tekton-Credential-Mode: ${CRED_MODE}" \
+          clone --branch "${BRANCH}" "$(params.git-url)" "$(workspaces.source.path)/app"
+
+        cd "$(workspaces.source.path)/app"
+        COMMIT_SHA=$(git rev-parse HEAD)
+
+        echo "==> Building fulfillment-api at commit ${COMMIT_SHA}"
+        go build -trimpath -ldflags="-s -w" -o "$(workspaces.source.path)/bin/fulfillment-api" .
+        BIN_SHA=$(sha256sum "$(workspaces.source.path)/bin/fulfillment-api" | awk '{print $1}')
+
+        printf '%s' "${COMMIT_SHA}" > "$(workspaces.source.path)/.build-meta/commit-sha"
+        printf '%s' "${COMMIT_SHA}" > "$(results.commit-sha.path)"
+        printf '%s' "${BIN_SHA}" > "$(results.binary-sha256.path)"
+        echo "==> Built fulfillment-api (commit=${COMMIT_SHA}, sha256=${BIN_SHA})"

@@ -1,0 +1,314 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: package-and-publish
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  description: >-
+    Packages the verified fulfillment-api binary into a deterministic OCI Image v1
+    layer + config + manifest and pushes it to the in-cluster OCI Distribution v2
+    registry. Uses ate-placeholder in Actor mode (rewritten by atenet-egress) or
+    /workspace/creds/token in Pod+PVC mode.
+  params:
+    - name: registry-url
+      type: string
+      default: http://git-oci.tekton-actors.svc.cluster.local
+      description: Base URL of the in-cluster OCI Distribution v2 registry.
+    - name: image-repo
+      type: string
+      default: fulfillment-api
+      description: Target OCI repository name.
+    - name: image-tag
+      type: string
+      default: latest
+      description: Target OCI image tag to publish.
+    - name: test-summary
+      type: string
+      default: ""
+      description: Upstream unit-test result summary embedded in OCI annotations.
+    - name: secret-posture
+      type: string
+      default: ""
+      description: Upstream vuln-scan secret posture embedded in OCI annotations.
+    - name: smoke-status
+      type: string
+      default: ""
+      description: Upstream integration-smoke status embedded in OCI annotations.
+    - name: approval-decision
+      type: string
+      default: ""
+      description: Upstream release-approval decision embedded in OCI annotations.
+  workspaces:
+    - name: source
+      description: Shared pipeline workspace containing source, warm GOCACHE, and bin/fulfillment-api.
+    - name: creds
+      optional: true
+      description: Optional mounted Git/OCI Secret workspace (bound in Pod+PVC mode; omitted in Actor mode).
+  results:
+    - name: image-digest
+      description: Immutable sha256 manifest digest returned by the OCI v2 registry.
+  steps:
+    - name: build-and-push-oci
+      image: golang:1.26-bookworm
+      script: |
+        #!/bin/sh
+        set -eu
+
+        export GOCACHE="${TEKTON_GOCACHE_OVERRIDE:-$(workspaces.source.path)/.gocache}"
+        export GOPROXY=off
+        export GOSUMDB=off
+        export GOTOOLCHAIN=local
+        export CGO_ENABLED=0
+
+        if [ "$(workspaces.creds.bound)" = "true" ] && [ -f "$(workspaces.creds.path)/token" ]; then
+          AUTH_TOKEN=$(tr -d '\r\n' < "$(workspaces.creds.path)/token")
+          CRED_MODE="mounted-secret"
+        else
+          AUTH_TOKEN="ate-placeholder"
+          CRED_MODE="ate-egress"
+        fi
+
+        # Refresh binary using warm GOCACHE so any hot-patched source files from a Rescue Actor
+        # are included in the published OCI artifact in milliseconds.
+        cd "$(workspaces.source.path)/app"
+        mkdir -p "$(workspaces.source.path)/bin"
+        go build -trimpath -ldflags="-s -w" -o "$(workspaces.source.path)/bin/fulfillment-api" .
+
+        COMMIT_SHA="unknown"
+        if [ -f "$(workspaces.source.path)/.build-meta/commit-sha" ]; then
+          COMMIT_SHA=$(cat "$(workspaces.source.path)/.build-meta/commit-sha")
+        elif git rev-parse HEAD >/dev/null 2>&1; then
+          COMMIT_SHA=$(git rev-parse HEAD)
+        fi
+        BIN_SHA=$(sha256sum "$(workspaces.source.path)/bin/fulfillment-api" | awk '{print $1}')
+
+        PUSH_SRC=$(mktemp "${TMPDIR:-/tmp}/oci-push-XXXXXX.go")
+        trap 'rm -f "${PUSH_SRC}"' EXIT
+        cat > "${PUSH_SRC}" << 'EOF'
+        package main
+
+        import (
+        	"archive/tar"
+        	"bytes"
+        	"compress/gzip"
+        	"crypto/sha256"
+        	"encoding/hex"
+        	"encoding/json"
+        	"fmt"
+        	"io"
+        	"net/http"
+        	"net/url"
+        	"os"
+        	"strings"
+        	"time"
+        )
+
+        type descriptor struct {
+        	MediaType string `json:"mediaType"`
+        	Digest    string `json:"digest"`
+        	Size      int64  `json:"size"`
+        }
+
+        func main() {
+        	baseURL := strings.TrimRight(os.Args[1], "/")
+        	repo := os.Args[2]
+        	tag := os.Args[3]
+        	binPath := os.Args[4]
+        	token := os.Args[5]
+        	credMode := os.Args[6]
+        	commitSHA := os.Args[7]
+        	binSHA := os.Args[8]
+        	testSummary := os.Args[9]
+        	secretPosture := os.Args[10]
+        	smokeStatus := os.Args[11]
+        	approvalDecision := os.Args[12]
+        	digestOut := os.Args[13]
+
+        	binBytes, err := os.ReadFile(binPath)
+        	if err != nil {
+        		fatal("read binary: %v", err)
+        	}
+
+        	var rawTar bytes.Buffer
+        	tw := tar.NewWriter(&rawTar)
+        	if err := tw.WriteHeader(&tar.Header{
+        		Name:     "fulfillment-api",
+        		Mode:     0o755,
+        		Size:     int64(len(binBytes)),
+        		ModTime:  time.Unix(0, 0).UTC(),
+        		Typeflag: tar.TypeReg,
+        	}); err != nil {
+        		fatal("tar header: %v", err)
+        	}
+        	if _, err := tw.Write(binBytes); err != nil {
+        		fatal("tar write: %v", err)
+        	}
+        	if err := tw.Close(); err != nil {
+        		fatal("tar close: %v", err)
+        	}
+        	diffSum := sha256.Sum256(rawTar.Bytes())
+        	diffID := "sha256:" + hex.EncodeToString(diffSum[:])
+
+        	var gzBuf bytes.Buffer
+        	gzw, _ := gzip.NewWriterLevel(&gzBuf, gzip.BestCompression)
+        	gzw.ModTime = time.Unix(0, 0).UTC()
+        	_, _ = gzw.Write(rawTar.Bytes())
+        	_ = gzw.Close()
+        	layerBytes := gzBuf.Bytes()
+        	layerSum := sha256.Sum256(layerBytes)
+        	layerDigest := "sha256:" + hex.EncodeToString(layerSum[:])
+
+        	cfgObj := map[string]any{
+        		"architecture": "amd64",
+        		"os":           "linux",
+        		"config": map[string]any{
+        			"Entrypoint":   []string{"/fulfillment-api"},
+        			"ExposedPorts": map[string]any{"8080/tcp": map[string]any{}},
+        		},
+        		"rootfs": map[string]any{
+        			"type":     "layers",
+        			"diff_ids": []string{diffID},
+        		},
+        	}
+        	cfgBytes, _ := json.Marshal(cfgObj)
+        	cfgSum := sha256.Sum256(cfgBytes)
+        	cfgDigest := "sha256:" + hex.EncodeToString(cfgSum[:])
+
+        	client := &http.Client{Timeout: 60 * time.Second}
+        	uploadBlob(client, baseURL, repo, token, credMode, cfgDigest, cfgBytes)
+        	uploadBlob(client, baseURL, repo, token, credMode, layerDigest, layerBytes)
+
+        	manifest := map[string]any{
+        		"schemaVersion": 2,
+        		"mediaType":     "application/vnd.oci.image.manifest.v1+json",
+        		"config": descriptor{
+        			MediaType: "application/vnd.oci.image.config.v1+json",
+        			Digest:    cfgDigest,
+        			Size:      int64(len(cfgBytes)),
+        		},
+        		"layers": []descriptor{
+        			{
+        				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+        				Digest:    layerDigest,
+        				Size:      int64(len(layerBytes)),
+        			},
+        		},
+        		"annotations": map[string]string{
+        			"org.opencontainers.image.revision": commitSHA,
+        			"dev.ate.tekton.binary-sha256":      binSHA,
+        			"dev.ate.tekton.test-summary":       testSummary,
+        			"dev.ate.tekton.secret-posture":     secretPosture,
+        			"dev.ate.tekton.smoke-status":       smokeStatus,
+        			"dev.ate.tekton.approval-decision":  approvalDecision,
+        		},
+        	}
+        	manifestBytes, _ := json.MarshalIndent(manifest, "", "  ")
+
+        	putURL := fmt.Sprintf("%s/v2/%s/manifests/%s", baseURL, repo, tag)
+        	req, err := http.NewRequest(http.MethodPut, putURL, bytes.NewReader(manifestBytes))
+        	if err != nil {
+        		fatal("manifest request: %v", err)
+        	}
+        	req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+        	req.Header.Set("Authorization", "Bearer "+token)
+        	req.Header.Set("X-Tekton-Credential-Mode", credMode)
+
+        	resp, err := client.Do(req)
+        	if err != nil {
+        		fatal("PUT manifest: %v", err)
+        	}
+        	body, _ := io.ReadAll(resp.Body)
+        	resp.Body.Close()
+        	if resp.StatusCode != http.StatusCreated {
+        		fatal("PUT manifest status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+        	}
+        	manifestDigest := strings.TrimSpace(resp.Header.Get("Docker-Content-Digest"))
+        	if manifestDigest == "" {
+        		sum := sha256.Sum256(manifestBytes)
+        		manifestDigest = "sha256:" + hex.EncodeToString(sum[:])
+        	}
+        	if err := os.WriteFile(digestOut, []byte(manifestDigest), 0o644); err != nil {
+        		fatal("write digest result: %v", err)
+        	}
+        	fmt.Printf("==> Published OCI image %s/v2/%s:%s (%s, authMode=%s)\n",
+        		baseURL, repo, tag, manifestDigest, credMode)
+        }
+
+        func uploadBlob(client *http.Client, baseURL, repo, token, credMode, digest string, data []byte) {
+        	startReq, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/v2/%s/blobs/uploads/", baseURL, repo), nil)
+        	startReq.Header.Set("Authorization", "Bearer "+token)
+        	startReq.Header.Set("X-Tekton-Credential-Mode", credMode)
+        	startResp, err := client.Do(startReq)
+        	if err != nil {
+        		fatal("start blob upload: %v", err)
+        	}
+        	startBody, _ := io.ReadAll(startResp.Body)
+        	startResp.Body.Close()
+        	if startResp.StatusCode != http.StatusAccepted {
+        		fatal("start blob upload status %d: %s", startResp.StatusCode, strings.TrimSpace(string(startBody)))
+        	}
+        	loc := resolveLoc(baseURL, startResp.Header.Get("Location"))
+
+        	patchReq, _ := http.NewRequest(http.MethodPatch, loc, bytes.NewReader(data))
+        	patchReq.Header.Set("Content-Type", "application/octet-stream")
+        	patchReq.Header.Set("Authorization", "Bearer "+token)
+        	patchReq.Header.Set("X-Tekton-Credential-Mode", credMode)
+        	patchResp, err := client.Do(patchReq)
+        	if err != nil {
+        		fatal("patch blob upload: %v", err)
+        	}
+        	patchBody, _ := io.ReadAll(patchResp.Body)
+        	patchResp.Body.Close()
+        	if patchResp.StatusCode != http.StatusAccepted {
+        		fatal("patch blob upload status %d: %s", patchResp.StatusCode, strings.TrimSpace(string(patchBody)))
+        	}
+        	if next := strings.TrimSpace(patchResp.Header.Get("Location")); next != "" {
+        		loc = resolveLoc(baseURL, next)
+        	}
+
+        	u, _ := url.Parse(loc)
+        	q := u.Query()
+        	q.Set("digest", digest)
+        	u.RawQuery = q.Encode()
+
+        	putReq, _ := http.NewRequest(http.MethodPut, u.String(), nil)
+        	putReq.Header.Set("Authorization", "Bearer "+token)
+        	putReq.Header.Set("X-Tekton-Credential-Mode", credMode)
+        	putResp, err := client.Do(putReq)
+        	if err != nil {
+        		fatal("finalize blob upload: %v", err)
+        	}
+        	putBody, _ := io.ReadAll(putResp.Body)
+        	putResp.Body.Close()
+        	if putResp.StatusCode != http.StatusCreated {
+        		fatal("finalize blob upload status %d: %s", putResp.StatusCode, strings.TrimSpace(string(putBody)))
+        	}
+        }
+
+        func resolveLoc(baseURL, loc string) string {
+        	b, _ := url.Parse(baseURL)
+        	l, _ := url.Parse(loc)
+        	return b.ResolveReference(l).String()
+        }
+
+        func fatal(format string, args ...any) {
+        	fmt.Fprintf(os.Stderr, format+"\n", args...)
+        	os.Exit(1)
+        }
+        EOF
+
+        go run "${PUSH_SRC}" \
+          "$(params.registry-url)" \
+          "$(params.image-repo)" \
+          "$(params.image-tag)" \
+          "$(workspaces.source.path)/bin/fulfillment-api" \
+          "${AUTH_TOKEN}" \
+          "${CRED_MODE}" \
+          "${COMMIT_SHA}" \
+          "${BIN_SHA}" \
+          "$(params.test-summary)" \
+          "$(params.secret-posture)" \
+          "$(params.smoke-status)" \
+          "$(params.approval-decision)" \
+          "$(results.image-digest.path)"
