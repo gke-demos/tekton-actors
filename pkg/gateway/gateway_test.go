@@ -224,6 +224,25 @@ func TestGateway_UIRoutesAndProjectorToggleAndZeroEmojis(t *testing.T) {
 		if containsEmoji(body) {
 			t.Fatalf("GET %s contains disallowed emoji characters", route)
 		}
+		for _, required := range []string{
+			"Tekton Pipelines on Agent Substrate",
+			"Flux :18080",
+			"Argo :18081",
+			"Tekton :18090",
+			"Push Release Code (High-Density Build Wave)",
+			"Push Buggy Code (pricing.go Regression)",
+			"Inject Sandbox Fault / OOM",
+			"1. WARM VS. COLD BUILD SPEED",
+			"2. HIGH-DENSITY MULTIPLEXING WAVE",
+			"3. BAD PUSH &amp; REVERTACTOR",
+			"4. ZERO-SECRET EGRESS INJECTION",
+			"3-Pod / 9-Slot gVisor WorkerPool Multiplexer (W1..W3)",
+			"2. Actor &amp; Snapshot Turn Inspector",
+		} {
+			if !strings.Contains(body, required) {
+				t.Fatalf("GET %s missing canonical 5-Zone UI element %q", route, required)
+			}
+		}
 	}
 }
 
