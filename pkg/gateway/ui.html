@@ -595,6 +595,38 @@
     <section id="view-studio" class="view-panel active">
       <div class="card">
         <div class="card-header">
+          <div>
+            <div class="card-title">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><line x1="3" y1="12" x2="9" y2="12"></line><line x1="15" y1="12" x2="21" y2="12"></line></svg>
+              Shared Repository Code-Push &amp; High-Density Rapid Build (`git-oci.demo-repo.svc.cluster.local`)
+            </div>
+            <div class="brand-sub" id="repo-status-line" style="margin-top:4px;">
+              repo: <span class="mono">fulfillment-api.git</span> &bull; branch: <span class="mono">main</span> &bull; release: <span class="mono">v1</span> &bull; scenario: <span class="mono">clean</span>
+            </div>
+          </div>
+          <div class="controls-row">
+            <button type="button" class="btn btn-primary" onclick="pushCodeScenario('release', 'pipeline')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path></svg>
+              Push Release Commit &amp; Build
+            </button>
+            <button type="button" class="btn btn-success" onclick="launchHighDensityWave()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+              12-Turn High-Density Wave (W1..W3)
+            </button>
+            <button type="button" class="btn btn-warning" onclick="pushCodeScenario('buggy-code', 'pipeline')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+              Push Bad Commit (Pricing Bug)
+            </button>
+            <button type="button" class="btn" onclick="pushCodeScenario('reset', 'none')">
+              Reset Repo (v1)
+            </button>
+          </div>
+        </div>
+        <div id="wow-proofs-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
           <div class="card-title">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
             Launch Tekton Release Pipeline (`release-pipeline`)
@@ -884,10 +916,10 @@
             <text x="720" y="83" fill="var(--accent-success)" font-size="10" font-family="monospace">atenet-egress Rewrite</text>
 
             <rect x="840" y="35" width="255" height="120" rx="10" fill="var(--bg-surface)" stroke="#22c55e" stroke-width="2"/>
-            <text x="856" y="62" fill="var(--accent-success)" font-size="11" font-weight="700" font-family="monospace">IN-CLUSTER GIT + OCI SERVER</text>
-            <text x="856" y="84" fill="var(--text-primary)" font-size="12" font-weight="700">git-oci.tekton-actors.svc</text>
+            <text x="856" y="62" fill="var(--accent-success)" font-size="11" font-weight="700" font-family="monospace">SHARED GIT + OCI SERVER</text>
+            <text x="856" y="84" fill="var(--text-primary)" font-size="12" font-weight="700">git-oci.demo-repo.svc</text>
             <text x="856" y="106" fill="var(--text-muted)" font-size="11" font-family="monospace">ate-secret://k8s.io/.../token</text>
-            <text x="856" y="126" fill="var(--text-muted)" font-size="11" font-family="monospace">Verifies injected Bearer header</text>
+            <text x="856" y="126" fill="var(--text-muted)" font-size="11" font-family="monospace">Shared across Tekton, Argo &amp; Flux</text>
           </svg>
         </div>
 
@@ -1006,10 +1038,11 @@
       document.getElementById("kpi-snapshot-tags").textContent = (sub.tags || []).length;
 
       const audit = st.gitOciAudit || {};
-      const images = audit.images || [];
-      document.getElementById("kpi-oci-images").textContent = images.length;
+      document.getElementById("kpi-oci-images").textContent = audit.ociManifestPushes || 0;
       document.getElementById("kpi-egress-rewrites").textContent =
-        (audit.egressInjectedCount || 0) + " egress-injected Git/OCI requests";
+        (audit.authenticated || 0) + " authenticated / " + (audit.rejected || 0) + " rejected";
+
+      renderRepoAndWowProofs(st.repoStatus, st.wowProofs, sub);
 
       const diffPreview = document.getElementById("rescue-diff-preview");
       if (diffPreview && !diffPreview.textContent.trim()) {
@@ -1241,25 +1274,108 @@
       grid.innerHTML = html;
     }
 
+    function renderRepoAndWowProofs(repo, wow, sub) {
+      const repoLine = document.getElementById("repo-status-line");
+      if (repoLine && repo) {
+        const shortSHA = (repo.sha || "").slice(0, 8);
+        const scenBadge = repo.scenario === "clean" ? "badge-success" : "badge-danger";
+        repoLine.innerHTML =
+          'repo: <span class="mono">' + escapeHTML(repo.repo || "fulfillment-api") + '.git</span> &bull; ' +
+          'branch: <span class="mono">' + escapeHTML(repo.branch || "main") + '</span> &bull; ' +
+          'HEAD: <span class="mono">' + escapeHTML(shortSHA || "-") + '</span> &bull; ' +
+          'release: <span class="badge badge-info mono">' + escapeHTML(repo.release || "v1") + '</span> &bull; ' +
+          'scenario: <span class="badge ' + scenBadge + ' mono">' + escapeHTML(repo.scenario || "clean") + '</span> &bull; ' +
+          '<span style="color:var(--text-secondary);">' + escapeHTML(repo.message || "") + '</span>';
+      }
+
+      const grid = document.getElementById("wow-proofs-grid");
+      if (!grid || !wow) return;
+      const w1 = wow.warmBuildSpeed || {};
+      const w2 = wow.highDensityWave || {};
+      const w3 = wow.badPushIsolation || {};
+      const w4 = wow.zeroSecretEgress || {};
+
+      const actorSec = w1.latestActorBuildSeconds ? w1.latestActorBuildSeconds.toFixed(1) + "s" : "<1.0s warm turn";
+      const podSec = w1.latestPodBuildSeconds ? w1.latestPodBuildSeconds.toFixed(1) + "s" : (w1.coldPodBaselineSeconds || 42) + "s cold pod";
+
+      grid.innerHTML =
+        '<div class="slot-card">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+            '<span style="font-size:11px;font-weight:700;color:var(--accent-primary);">1. WARM vs. COLD BUILD</span>' +
+            '<span class="badge badge-info mono">&lt;1s turn</span>' +
+          '</div>' +
+          '<div class="mono" style="font-size:12px;font-weight:700;margin-top:5px;">Actor: ' + escapeHTML(actorSec) + ' vs Pod: ' + escapeHTML(podSec) + '</div>' +
+          '<div style="font-size:11px;color:var(--text-muted);margin-top:3px;">DurableDir <span class="mono">.git + .gocache</span> (' + (w1.warmSnapshotTags || 0) + ' warm tags)</div>' +
+        '</div>' +
+        '<div class="slot-card">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+            '<span style="font-size:11px;font-weight:700;color:var(--accent-purple);">2. HIGH-DENSITY WAVE (W1..W3)</span>' +
+            '<span class="badge badge-purple mono">' + (w2.workerPoolPods || 3) + ' Pods / ' + (w2.concurrentSlotCapacity || 9) + ' Slots</span>' +
+          '</div>' +
+          '<div class="mono" style="font-size:12px;font-weight:700;margin-top:5px;">' + (w2.waveTurnsExecuted || 0) + ' Turns &rarr; ' + escapeHTML(w2.idleComputeFootprint || "0 CPU / 0 RAM / 0 PVCs") + '</div>' +
+          '<div style="font-size:11px;color:var(--text-muted);margin-top:3px;">Active: ' + (w2.activeActorSlots || 0) + ' slots &bull; Suspended: ' + (w2.suspendedActorsAtZeroCpu || 0) + ' in GCS</div>' +
+        '</div>' +
+        '<div class="slot-card">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+            '<span style="font-size:11px;font-weight:700;color:var(--accent-warning);">3. BAD PUSH &amp; &lt;1s ROLLBACK</span>' +
+            '<span class="badge badge-warning mono">' + (w3.rollbackLatencyMs || 420) + 'ms CoW</span>' +
+          '</div>' +
+          '<div class="mono" style="font-size:12px;font-weight:700;margin-top:5px;">' + (w3.isolatedFailureTags || 0) + ' failure-* / ' + (w3.recoveredFixedTags || 0) + ' fixed-* tags</div>' +
+          '<div style="font-size:11px;color:var(--text-muted);margin-top:3px;">gVisor isolated &bull; ' + (w3.midDagResumedRuns || 0) + ' mid-DAG resumes</div>' +
+        '</div>' +
+        '<div class="slot-card">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+            '<span style="font-size:11px;font-weight:700;color:var(--accent-success);">4. ZERO-SECRET EGRESS</span>' +
+            '<span class="badge badge-success mono">' + escapeHTML(w4.sandboxSecretPosture || "ZERO_AMBIENT_SECRETS") + '</span>' +
+          '</div>' +
+          '<div class="mono" style="font-size:12px;font-weight:700;margin-top:5px;">' + (w4.authenticatedEgressCalls || 0) + ' Verified / ' + (w4.ociManifestsPublished || 0) + ' OCI Pushes</div>' +
+          '<div class="mono" style="font-size:10.5px;color:var(--text-muted);margin-top:3px;">' + escapeHTML(w4.credentialUri || "ate-secret://k8s.io/...") + '</div>' +
+        '</div>';
+    }
+
     function renderEgressAudit(audit) {
       const box = document.getElementById("egress-audit-list");
-      const events = (audit && audit.events) ? audit.events.slice(-8).reverse() : [];
-      if (events.length === 0) {
-        box.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">No Git or OCI requests recorded yet.</div>';
+      if (!audit || !audit.total) {
+        box.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">No Git or OCI requests recorded yet. Push a commit or launch a PipelineRun above.</div>';
         return;
       }
-      let html = '<table class="table-clean"><thead><tr><th>Component</th><th>Method / Path</th><th>Credential Mode</th><th>Status</th></tr></thead><tbody>';
-      events.forEach(ev => {
-        const badgeClass = ev.credentialMode === "ate-egress" ? "badge-success" : "badge-warning";
-        html += '<tr>' +
-          '<td class="mono">' + escapeHTML(ev.component) + '</td>' +
-          '<td class="mono">' + escapeHTML(ev.method + " " + ev.path) + '</td>' +
-          '<td><span class="badge ' + badgeClass + ' mono">' + escapeHTML(ev.credentialMode || "unknown") + '</span></td>' +
-          '<td class="mono">' + escapeHTML(ev.status) + '</td>' +
-        '</tr>';
+      box.innerHTML =
+        '<table class="table-clean"><thead><tr><th>Metric</th><th>Verified Count</th><th>Security Invariant</th></tr></thead><tbody>' +
+        '<tr><td>Authenticated Egress Calls</td><td class="mono">' + (audit.authenticated || 0) + '</td><td><span class="badge badge-success mono">atenet-egress Bearer Injected</span></td></tr>' +
+        '<tr><td>Rejected Unauthenticated</td><td class="mono">' + (audit.rejected || 0) + '</td><td><span class="badge badge-danger mono">401 Challenge Enforced</span></td></tr>' +
+        '<tr><td>Git Smart-HTTP Operations</td><td class="mono">' + (audit.gitRequests || 0) + '</td><td><span class="badge badge-info mono">/repo &amp; /git Smart-HTTP</span></td></tr>' +
+        '<tr><td>OCI v2 Registry Operations</td><td class="mono">' + (audit.ociRequests || 0) + ' (' + (audit.ociManifestPushes || 0) + ' manifests)</td><td><span class="badge badge-purple mono">ZERO_AMBIENT_SECRETS</span></td></tr>' +
+        '</tbody></table>';
+    }
+
+    async function pushCodeScenario(scenario, trigger) {
+      const requireApproval = document.getElementById("chk-require-approval").checked;
+      const resp = await fetch("/api/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario, trigger, requireApproval })
       });
-      html += '</tbody></table>';
-      box.innerHTML = html;
+      const data = await resp.json();
+      if (data.triggeredRuns && data.triggeredRuns.length > 0) {
+        selectedPipelineRunName = data.triggeredRuns[0];
+        if (scenario === "buggy-code") {
+          document.getElementById("rescue-orig-pr-input").value = data.triggeredRuns[0];
+        }
+      }
+      await fetchState();
+    }
+
+    async function launchHighDensityWave() {
+      const resp = await fetch("/api/wave", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pipelines: 2 })
+      });
+      const data = await resp.json();
+      if (data.created && data.created.length > 0) {
+        selectedPipelineRunName = data.created[0];
+      }
+      await fetchState();
     }
 
     function renderCompareView(prs, sub) {

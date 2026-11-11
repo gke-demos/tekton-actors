@@ -15,7 +15,7 @@ metadata:
     app.kubernetes.io/part-of: tekton-actors
     workload: tekton-actors
 spec:
-  replicas: 4
+  replicas: 3
   sandboxClasses:
     - name: gvisor
       configRef:

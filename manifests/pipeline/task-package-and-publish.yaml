@@ -13,7 +13,7 @@ spec:
   params:
     - name: registry-url
       type: string
-      default: http://git-oci.tekton-actors.svc.cluster.local
+      default: http://git-oci.demo-repo.svc.cluster.local
       description: Base URL of the in-cluster OCI Distribution v2 registry.
     - name: image-repo
       type: string

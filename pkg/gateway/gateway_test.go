@@ -399,7 +399,24 @@ func TestGateway_RESTStateAndPipelineRunAndApprovalAndRescue(t *testing.T) {
 		t.Fatalf("POST /api/rescue/commit-and-resume status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	// 4. GET /api/state and verify aggregated response
+	// 4. POST /api/push ("release") and POST /api/wave
+	pushBody := bytes.NewBufferString(`{"scenario":"release","release":"v2","trigger":"pipeline"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/push", pushBody)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/push status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	waveBody := bytes.NewBufferString(`{"pipelines":2,"release":"v3-wave"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/wave", waveBody)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/wave status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 5. GET /api/state and verify aggregated response including RepoStatus & WowProofs
 	req = httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	rec = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
@@ -410,8 +427,14 @@ func TestGateway_RESTStateAndPipelineRunAndApprovalAndRescue(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
 		t.Fatalf("decode state response: %v", err)
 	}
-	if len(state.PipelineRuns) != 3 {
-		t.Fatalf("state.PipelineRuns len = %d, want 3 (actor + pod-pvc + resumed)", len(state.PipelineRuns))
+	if len(state.PipelineRuns) != 6 {
+		t.Fatalf("state.PipelineRuns len = %d, want 6 (actor + pod-pvc + resumed + push + 2 wave)", len(state.PipelineRuns))
+	}
+	if state.RepoStatus == nil || state.RepoStatus.Release != "v3-wave" {
+		t.Fatalf("state.RepoStatus = %+v, want release v3-wave", state.RepoStatus)
+	}
+	if state.WowProofs.ZeroSecretEgress.SandboxSecretPosture != "ZERO_AMBIENT_SECRETS" {
+		t.Fatalf("state.WowProofs.ZeroSecretEgress = %+v", state.WowProofs.ZeroSecretEgress)
 	}
 	if len(state.Substrate.WorkerPods) != 1 {
 		t.Fatalf("state.Substrate.WorkerPods len = %d, want 1", len(state.Substrate.WorkerPods))

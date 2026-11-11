@@ -13,7 +13,7 @@ spec:
   params:
     - name: git-url
       type: string
-      default: http://git-oci.tekton-actors.svc.cluster.local/repo/fulfillment-api.git
+      default: http://git-oci.demo-repo.svc.cluster.local/repo/fulfillment-api.git
       description: Git Smart-HTTP URL of the repository to build.
     - name: inject-bug
       type: string
@@ -56,23 +56,47 @@ spec:
           BRANCH="buggy"
         fi
 
-        rm -rf "$(workspaces.source.path)/app"
         mkdir -p "$(workspaces.source.path)/bin" "$(workspaces.source.path)/.gocache" "$(workspaces.source.path)/.build-meta"
-
-        echo "==> Cloning $(params.git-url) (branch=${BRANCH}, authMode=${CRED_MODE})"
-        GIT_TERMINAL_PROMPT=0 git \
-          -c "http.extraHeader=Authorization: Bearer ${AUTH_TOKEN}" \
-          -c "http.extraHeader=X-Tekton-Credential-Mode: ${CRED_MODE}" \
-          clone --branch "${BRANCH}" "$(params.git-url)" "$(workspaces.source.path)/app"
+        if [ -d "$(workspaces.source.path)/app/.git" ]; then
+          CACHE_POSTURE="WARM_DURABLE_DIR"
+          echo "==> Warm Incremental Fetch $(params.git-url) (branch=${BRANCH}, authMode=${CRED_MODE}, cache=${CACHE_POSTURE})"
+          cd "$(workspaces.source.path)/app"
+          git remote set-url origin "$(params.git-url)" || true
+          if GIT_TERMINAL_PROMPT=0 git \
+            -c "http.extraHeader=Authorization: Bearer ${AUTH_TOKEN}" \
+            -c "http.extraHeader=X-Tekton-Credential-Mode: ${CRED_MODE}" \
+            fetch --depth=1 origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" && \
+            git checkout -B "${BRANCH}" "refs/remotes/origin/${BRANCH}" && \
+            git reset --hard "refs/remotes/origin/${BRANCH}" && \
+            git clean -fdx; then
+            :
+          else
+            cd "$(workspaces.source.path)"
+            rm -rf "$(workspaces.source.path)/app"
+            GIT_TERMINAL_PROMPT=0 git \
+              -c "http.extraHeader=Authorization: Bearer ${AUTH_TOKEN}" \
+              -c "http.extraHeader=X-Tekton-Credential-Mode: ${CRED_MODE}" \
+              clone --branch "${BRANCH}" "$(params.git-url)" "$(workspaces.source.path)/app"
+          fi
+        else
+          CACHE_POSTURE="COLD_WORKSPACE"
+          rm -rf "$(workspaces.source.path)/app"
+          echo "==> Cloning $(params.git-url) (branch=${BRANCH}, authMode=${CRED_MODE}, cache=${CACHE_POSTURE})"
+          GIT_TERMINAL_PROMPT=0 git \
+            -c "http.extraHeader=Authorization: Bearer ${AUTH_TOKEN}" \
+            -c "http.extraHeader=X-Tekton-Credential-Mode: ${CRED_MODE}" \
+            clone --branch "${BRANCH}" "$(params.git-url)" "$(workspaces.source.path)/app"
+        fi
 
         cd "$(workspaces.source.path)/app"
         COMMIT_SHA=$(git rev-parse HEAD)
 
-        echo "==> Building fulfillment-api at commit ${COMMIT_SHA}"
+        echo "==> Building fulfillment-api at commit ${COMMIT_SHA} (cachePosture=${CACHE_POSTURE})"
         go build -trimpath -ldflags="-s -w" -o "$(workspaces.source.path)/bin/fulfillment-api" .
         BIN_SHA=$(sha256sum "$(workspaces.source.path)/bin/fulfillment-api" | awk '{print $1}')
 
         printf '%s' "${COMMIT_SHA}" > "$(workspaces.source.path)/.build-meta/commit-sha"
+        printf '%s' "${CACHE_POSTURE}" > "$(workspaces.source.path)/.build-meta/cache-posture"
         printf '%s' "${COMMIT_SHA}" > "$(results.commit-sha.path)"
         printf '%s' "${BIN_SHA}" > "$(results.binary-sha256.path)"
-        echo "==> Built fulfillment-api (commit=${COMMIT_SHA}, sha256=${BIN_SHA})"
+        echo "==> Built fulfillment-api (commit=${COMMIT_SHA}, sha256=${BIN_SHA}, cachePosture=${CACHE_POSTURE})"

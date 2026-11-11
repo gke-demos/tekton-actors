@@ -87,7 +87,7 @@ spec:
             - --listen-addr=:8080
             - --namespace=tekton-actors
             - --atespace=tekton-actors
-            - --git-oci-url=http://git-oci.tekton-actors.svc.cluster.local
+            - --git-oci-url=http://git-oci.demo-repo.svc.cluster.local
           ports:
             - name: http
               containerPort: 8080

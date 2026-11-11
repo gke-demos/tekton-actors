@@ -478,3 +478,131 @@ func TestOCIRegistryV2PushPullAndAudit(t *testing.T) {
 		t.Fatalf("did not find expected OCI manifest push AuditEvent in %+v", audit.Events)
 	}
 }
+
+func TestSharedGitOCIMultiCIAndCodePushAPI(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	token := "substrate-multici-demo-token-2026"
+	srv, err := gitoci.NewServer(gitoci.Config{
+		DataDir:   t.TempDir(),
+		AuthToken: token,
+	})
+	if err != nil {
+		t.Fatalf("gitoci.NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// 1. GET /api/repo/status returns initial v1 clean baseline.
+	statusResp, err := http.Get(ts.URL + "/api/repo/status")
+	if err != nil {
+		t.Fatalf("GET /api/repo/status: %v", err)
+	}
+	var st gitoci.RepoStatus
+	if err := json.NewDecoder(statusResp.Body).Decode(&st); err != nil {
+		statusResp.Body.Close()
+		t.Fatalf("decode status: %v", err)
+	}
+	statusResp.Body.Close()
+	if st.Repo != "fulfillment-api" || st.Release != "v1" || st.Scenario != "clean" || st.SHA == "" {
+		t.Fatalf("unexpected initial RepoStatus: %+v", st)
+	}
+
+	// 2. Clone via /git/tenant-01.git using HTTP Basic Auth (as go-git / Flux uses).
+	basicURL := strings.Replace(ts.URL, "http://", "http://oauth2:"+token+"@", 1) + "/git/tenant-01.git"
+	tenantCloneDir := filepath.Join(t.TempDir(), "tenant-01-clone")
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", basicURL, tenantCloneDir)
+	cloneCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone /git/tenant-01.git with Basic auth failed: %v\n%s", err, out)
+	}
+
+	for _, relPath := range []string{
+		"go.mod",
+		"main.go",
+		"pricing.go",
+		"pricing_test.go",
+		"kustomization.yaml",
+		"configmap.yaml",
+		"service.yaml",
+		"deployment.yaml",
+		"deploy/overlays/tenant-01/kustomization.yaml",
+		"deploy/overlays/tenant-24/kustomization.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(tenantCloneDir, filepath.FromSlash(relPath))); err != nil {
+			t.Fatalf("expected seeded file %s missing: %v", relPath, err)
+		}
+	}
+
+	// 3. POST /api/repo/push for release v2, buggy-code, oom-overlay, and reset.
+	pushScenario := func(req gitoci.RepoPushRequest) gitoci.RepoStatus {
+		t.Helper()
+		raw, _ := json.Marshal(req)
+		resp, err := http.Post(ts.URL+"/api/repo/push", "application/json", strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("POST /api/repo/push (%+v): %v", req, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("POST /api/repo/push (%+v) status = %d: %s", req, resp.StatusCode, string(body))
+		}
+		var out gitoci.RepoStatus
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode push status: %v", err)
+		}
+		return out
+	}
+
+	stV2 := pushScenario(gitoci.RepoPushRequest{Scenario: "release", Release: "v2"})
+	if stV2.Release != "v2" || stV2.Scenario != "clean" || stV2.SHA == st.SHA {
+		t.Fatalf("expected v2 release commit, got %+v", stV2)
+	}
+
+	stBuggy := pushScenario(gitoci.RepoPushRequest{Scenario: "buggy-code", Release: "v3-buggy"})
+	if stBuggy.Scenario != "buggy-code" || stBuggy.SHA == stV2.SHA {
+		t.Fatalf("expected buggy-code commit, got %+v", stBuggy)
+	}
+
+	stOOM := pushScenario(gitoci.RepoPushRequest{Scenario: "oom-overlay", Release: "v4-oom", Tenant: "tenant-01"})
+	if stOOM.Scenario != "oom-overlay" || stOOM.Tenant != "tenant-01" || stOOM.SHA == stBuggy.SHA {
+		t.Fatalf("expected oom-overlay commit, got %+v", stOOM)
+	}
+
+	stReset := pushScenario(gitoci.RepoPushRequest{Scenario: "reset"})
+	if stReset.Scenario != "clean" || stReset.Release != "v1" || stReset.SHA == stOOM.SHA {
+		t.Fatalf("expected reset commit, got %+v", stReset)
+	}
+
+	// 4. Verify git pull and real git push (Smart-HTTP git-receive-pack) work from the cloned repo.
+	runGitInClone := func(args ...string) {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = tenantCloneDir
+		cmd.Env = append(os.Environ(),
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_AUTHOR_NAME=Dev User",
+			"GIT_AUTHOR_EMAIL=dev@example.com",
+			"GIT_COMMITTER_NAME=Dev User",
+			"GIT_COMMITTER_EMAIL=dev@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	runGitInClone("pull", "--ff-only", "origin", "main")
+	if err := os.WriteFile(filepath.Join(tenantCloneDir, "README.md"), []byte("# fulfillment-api\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGitInClone("add", "README.md")
+	runGitInClone("commit", "-m", "Direct developer git push over Smart-HTTP")
+	runGitInClone("push", "origin", "HEAD:main")
+	localHead := gitRevParseHEAD(t, ctx, tenantCloneDir)
+
+	afterPushStatus := srv.RepoStatus()
+	if afterPushStatus.SHA != localHead || !strings.Contains(afterPushStatus.Message, "Direct developer git push") {
+		t.Fatalf("RepoStatus after git push = %+v, want SHA=%s", afterPushStatus, localHead)
+	}
+}

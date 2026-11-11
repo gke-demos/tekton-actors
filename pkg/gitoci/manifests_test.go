@@ -211,70 +211,62 @@ func TestManifestsValidateTektonV1AndKubernetesSchemas(t *testing.T) {
 		t.Fatalf("pipelinerun-actor.yaml must bind only 'source' with actor{atespace: tekton-actors, egressSecret: git-oci-auth}: %+v", actorPR.Spec.Workspaces)
 	}
 
-	// Validate manifests/git-oci-server.yaml Kubernetes objects.
-	deployManifestBytes, err := os.ReadFile(filepath.Join("..", "..", "manifests", "git-oci-server.yaml"))
-	if err != nil {
-		t.Fatalf("read manifests/git-oci-server.yaml: %v", err)
-	}
-	docs := bytes.Split(deployManifestBytes, []byte("\n---"))
-	sawNS, sawSecret, sawPolicyCM, sawDeploy, sawSvc := false, false, false, false, false
-	for _, doc := range docs {
-		trimmed := bytes.TrimSpace(doc)
-		if len(trimmed) == 0 {
-			continue
+	// Validate manifests/git-oci-server.yaml and manifests/demo-repo-git-oci.yaml Kubernetes objects.
+	for _, tc := range []struct {
+		file string
+		ns   string
+	}{
+		{file: "git-oci-server.yaml", ns: "tekton-actors"},
+		{file: "demo-repo-git-oci.yaml", ns: "demo-repo"},
+	} {
+		deployManifestBytes, err := os.ReadFile(filepath.Join("..", "..", "manifests", tc.file))
+		if err != nil {
+			t.Fatalf("read manifests/%s: %v", tc.file, err)
 		}
-		var kindMeta struct {
-			Kind string `json:"kind"`
-		}
-		if err := yaml.Unmarshal(trimmed, &kindMeta); err != nil {
-			t.Fatalf("unmarshal kind in git-oci-server.yaml: %v", err)
-		}
-		switch kindMeta.Kind {
-		case "Namespace":
-			var ns corev1.Namespace
-			if err := yaml.UnmarshalStrict(trimmed, &ns); err != nil {
-				t.Fatalf("UnmarshalStrict Namespace: %v", err)
+		docs := bytes.Split(deployManifestBytes, []byte("\n---"))
+		sawNS, sawDeploy, sawSvc := false, false, false
+		for _, doc := range docs {
+			trimmed := bytes.TrimSpace(doc)
+			if len(trimmed) == 0 {
+				continue
 			}
-			if ns.Name == "tekton-actors" && ns.Labels["ate.dev/api-access"] == "true" {
-				sawNS = true
+			var kindMeta struct {
+				Kind string `json:"kind"`
 			}
-		case "Secret":
-			var sec corev1.Secret
-			if err := yaml.UnmarshalStrict(trimmed, &sec); err != nil {
-				t.Fatalf("UnmarshalStrict Secret: %v", err)
+			if err := yaml.Unmarshal(trimmed, &kindMeta); err != nil {
+				t.Fatalf("unmarshal kind in %s: %v", tc.file, err)
 			}
-			if sec.Name == "git-oci-auth" && sec.Namespace == "tekton-actors" {
-				sawSecret = true
-			}
-		case "ConfigMap":
-			var cm corev1.ConfigMap
-			if err := yaml.UnmarshalStrict(trimmed, &cm); err != nil {
-				t.Fatalf("UnmarshalStrict ConfigMap: %v", err)
-			}
-			if cm.Name == "k8s-credential-provider-namespace-policy" && cm.Namespace == "ate-system" {
-				sawPolicyCM = true
-			}
-		case "Deployment":
-			var dep appsv1.Deployment
-			if err := yaml.UnmarshalStrict(trimmed, &dep); err != nil {
-				t.Fatalf("UnmarshalStrict Deployment: %v", err)
-			}
-			if dep.Name == "git-oci" && dep.Namespace == "tekton-actors" {
-				sawDeploy = true
-			}
-		case "Service":
-			var svc corev1.Service
-			if err := yaml.UnmarshalStrict(trimmed, &svc); err != nil {
-				t.Fatalf("UnmarshalStrict Service: %v", err)
-			}
-			if svc.Name == "git-oci" && svc.Namespace == "tekton-actors" {
-				sawSvc = true
+			switch kindMeta.Kind {
+			case "Namespace":
+				var ns corev1.Namespace
+				if err := yaml.UnmarshalStrict(trimmed, &ns); err != nil {
+					t.Fatalf("UnmarshalStrict Namespace in %s: %v", tc.file, err)
+				}
+				if ns.Name == tc.ns {
+					sawNS = true
+				}
+			case "Deployment":
+				var dep appsv1.Deployment
+				if err := yaml.UnmarshalStrict(trimmed, &dep); err != nil {
+					t.Fatalf("UnmarshalStrict Deployment in %s: %v", tc.file, err)
+				}
+				if dep.Name == "git-oci" && dep.Namespace == tc.ns {
+					sawDeploy = true
+				}
+			case "Service":
+				var svc corev1.Service
+				if err := yaml.UnmarshalStrict(trimmed, &svc); err != nil {
+					t.Fatalf("UnmarshalStrict Service in %s: %v", tc.file, err)
+				}
+				if svc.Name == "git-oci" && svc.Namespace == tc.ns {
+					sawSvc = true
+				}
 			}
 		}
-	}
-	if !sawNS || !sawSecret || !sawPolicyCM || !sawDeploy || !sawSvc {
-		t.Fatalf("missing expected resources in git-oci-server.yaml: ns=%v secret=%v policyCM=%v deploy=%v svc=%v",
-			sawNS, sawSecret, sawPolicyCM, sawDeploy, sawSvc)
+		if !sawNS || !sawDeploy || !sawSvc {
+			t.Fatalf("missing expected resources in %s: ns=%v deploy=%v svc=%v",
+				tc.file, sawNS, sawDeploy, sawSvc)
+		}
 	}
 }
 

@@ -15,14 +15,15 @@ import (
 
 const defaultMaxAuditEvents = 2000
 
-// Server hosts an in-cluster Bearer-authenticated Git Smart-HTTP repository
-// and OCI Distribution Spec v2 registry, plus a structured non-secret audit log.
+// Server hosts an in-cluster Bearer/Basic-authenticated Git Smart-HTTP repository
+// and OCI Distribution Spec v2 registry, plus a structured non-secret audit log
+// and code-push status/mutation endpoints.
 //
 // Security notes:
-//   - All /repo/* and /v2/* endpoints strictly enforce Bearer token authentication
+//   - All /repo/*, /git/*, and /v2/* endpoints strictly enforce token authentication
 //     using constant-time comparison and never log or return secret values.
-//   - TODO(security): /readyz, /healthz, and /api/audit* are cluster-internal
-//     readiness and telemetry endpoints restricted to cluster control-plane / UI
+//   - TODO(security): /readyz, /healthz, /api/audit*, and /api/repo/* are cluster-internal
+//     readiness, telemetry, and demo control endpoints restricted to cluster control-plane / UI
 //     pods via Kubernetes NetworkPolicy and excluded from Actor EgressPolicy rules.
 //     Add rate limiting and mTLS if exposed beyond cluster-internal networks.
 type Server struct {
@@ -100,7 +101,10 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/healthz", s.handleProbe)
 	mux.HandleFunc("/api/audit", s.handleGetAudit)
 	mux.HandleFunc("/api/audit/reset", s.handleResetAudit)
+	mux.HandleFunc("/api/repo/status", s.handleGetRepoStatus)
+	mux.HandleFunc("/api/repo/push", s.handlePushRepo)
 	mux.HandleFunc("/repo/", s.handleGitRepo)
+	mux.HandleFunc("/git/", s.handleGitRepo)
 	mux.HandleFunc("/v2/", s.handleOCIV2)
 	s.handler = mux
 	return s, nil
@@ -116,13 +120,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
 }
 
-// MainCommitSHA returns the commit SHA of the initialized "main" branch.
+// MainCommitSHA returns the commit SHA of the "main" branch.
 func (s *Server) MainCommitSHA() string {
+	s.gitRepo.mu.RLock()
+	defer s.gitRepo.mu.RUnlock()
 	return s.gitRepo.mainCommit
 }
 
-// BuggyCommitSHA returns the commit SHA of the initialized "buggy" branch.
+// BuggyCommitSHA returns the commit SHA of the "buggy" branch.
 func (s *Server) BuggyCommitSHA() string {
+	s.gitRepo.mu.RLock()
+	defer s.gitRepo.mu.RUnlock()
 	return s.gitRepo.buggyCommit
 }
 
@@ -201,14 +209,34 @@ func (s *Server) verifyBearer(r *http.Request) (bool, string) {
 	if raw == "" {
 		return false, "missing"
 	}
-	scheme, candidate, hasSpace := strings.Cut(raw, " ")
-	if !hasSpace || !strings.EqualFold(scheme, "Bearer") {
+	scheme, rest, hasSpace := strings.Cut(raw, " ")
+	if !hasSpace {
 		return false, "non-bearer"
 	}
-	candidate = strings.TrimSpace(candidate)
-	if candidate == "" {
-		return false, "missing"
+
+	var candidate string
+	switch {
+	case strings.EqualFold(scheme, "Bearer"):
+		candidate = strings.TrimSpace(rest)
+		if candidate == "" {
+			return false, "missing"
+		}
+	case strings.EqualFold(scheme, "Basic"):
+		user, pass, ok := r.BasicAuth()
+		if !ok {
+			return false, "invalid-basic"
+		}
+		candidate = strings.TrimSpace(pass)
+		if candidate == "" {
+			candidate = strings.TrimSpace(user)
+		}
+		if candidate == "" {
+			return false, "missing"
+		}
+	default:
+		return false, "non-bearer"
 	}
+
 	if candidate == "ate-placeholder" || candidate == "actor-placeholder" {
 		return false, "unrewritten-ate-placeholder"
 	}
@@ -250,6 +278,7 @@ func writeBearerChallenge(w http.ResponseWriter, proto Protocol) {
 		_, _ = w.Write([]byte(`{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}` + "\n"))
 		return
 	}
+	w.Header().Add("WWW-Authenticate", `Basic realm="git-oci"`)
 	writeJSONError(w, http.StatusUnauthorized, "authentication required")
 }
 
