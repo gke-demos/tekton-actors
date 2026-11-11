@@ -23,4 +23,6 @@ spec:
     - name: source
       actor:
         atespace: tekton-actors
+        workerSelector:
+          workload: tekton-actors
         egressSecret: git-oci-auth

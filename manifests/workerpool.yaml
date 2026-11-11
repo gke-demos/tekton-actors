@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tekton-actors
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+    ate.dev/api-access: "true"
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: tekton-actors-pool
+  namespace: tekton-actors
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+    workload: tekton-actors
+spec:
+  replicas: 4
+  sandboxClasses:
+    - name: gvisor
+      configRef:
+        name: gvisor-default
+  template:
+    labels:
+      workload: tekton-actors
+  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0

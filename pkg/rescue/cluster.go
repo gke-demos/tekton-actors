@@ -39,7 +39,7 @@ import (
 const (
 	DefaultSystemNamespace  = "ate-system"
 	DefaultClientSA         = "ate-client"
-	DefaultRouterClientSA   = "atenet-client"
+	DefaultRouterClientSA   = "atenet-router"
 	DefaultAPIServiceName   = "api"
 	DefaultRouterService    = "atenet-router"
 	RouterConnectTLSPort    = 8444
@@ -162,7 +162,7 @@ func (b *ClusterBridge) ActorEndpoint(atespace, actorName string) (string, *http
 	baseURL := fmt.Sprintf("http://%s:%d", actorName, SupervisorPort)
 	return baseURL, &http.Client{
 		Transport: transport,
-		Timeout:   60 * time.Second,
+		Timeout:   180 * time.Second,
 	}
 }
 

@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: approvalgate-controller
+  namespace: tekton-actors
+  labels:
+    app: approvalgate-controller
+    app.kubernetes.io/part-of: tekton-actors
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tekton-actors-approvalgate-controller
+  labels:
+    app: approvalgate-controller
+    app.kubernetes.io/part-of: tekton-actors
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["customruns"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["tekton.dev"]
+    resources: ["customruns/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tekton-actors-approvalgate-controller
+  labels:
+    app: approvalgate-controller
+    app.kubernetes.io/part-of: tekton-actors
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tekton-actors-approvalgate-controller
+subjects:
+  - kind: ServiceAccount
+    name: approvalgate-controller
+    namespace: tekton-actors
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approvalgate-controller
+  namespace: tekton-actors
+  labels:
+    app: approvalgate-controller
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: approvalgate-controller
+  template:
+    metadata:
+      labels:
+        app: approvalgate-controller
+        app.kubernetes.io/part-of: tekton-actors
+    spec:
+      serviceAccountName: approvalgate-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: ko://github.com/gke-demos/tekton-actors/cmd/approvalgate-controller
+          args:
+            - --namespace=tekton-actors
+            - --probe-addr=:8080
+          ports:
+            - name: probes
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

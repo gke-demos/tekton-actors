@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const defaultRescueTimeout = 60 * time.Second
+const defaultRescueTimeout = 180 * time.Second
 
 func cleanWorkspaceRelPath(raw string) (string, error) {
 	if raw == "" {
