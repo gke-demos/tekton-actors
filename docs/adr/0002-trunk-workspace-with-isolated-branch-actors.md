@@ -1,0 +1,3 @@
+# Trunk Workspace Actor with Isolated CoW Branch Actors on Fan-Out
+
+When a `PipelineRun` fans out after a task into multiple parallel tasks sharing an `Actor Workspace Binding`, the `PipelineRun` reconciler suspends the trunk `Workspace Actor`, mints a `Snapshot Tag`, and seeds an independent `Branch Actor` per parallel `TaskRun` from `source_tag`. Parallel `Branch Actor`s never merge filesystem mutations back into `/workspace`; they emit structured Tekton `TaskRun` `results`, and downstream fan-in tasks resume the clean trunk `Workspace Actor` from the pre-fan-out `Snapshot Tag` to guarantee deterministic workspaces without 3-way filesystem conflict races.
