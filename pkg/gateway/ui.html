@@ -3,32 +3,32 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Tekton Pipelines on Agent Substrate — Mission Control</title>
+  <title>Tekton Pipelines on Agent Substrate — Telemetry Console</title>
   <style>
     :root,
     html[data-theme="dark"] {
       --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
-      --bg-canvas: #0b0f17;
-      --bg-surface: #111827;
-      --bg-elevated: #172033;
-      --bg-hover: #1e293b;
-      --bg-code: #070a10;
-      --border: #263248;
-      --border-strong: #3b4d6b;
-      --fg: #f1f5f9;
+      --bg-canvas: #090d16;
+      --bg-surface: #0f1623;
+      --bg-elevated: #161f30;
+      --bg-hover: #1e2a3f;
+      --bg-code: #060911;
+      --border: rgba(148, 163, 184, 0.16);
+      --border-strong: rgba(148, 163, 184, 0.34);
+      --fg: #f8fafc;
       --fg-secondary: #cbd5e1;
       --fg-muted: #94a3b8;
       --accent: #38bdf8;
-      --accent-soft: rgba(56, 189, 248, 0.14);
+      --accent-soft: rgba(56, 189, 248, 0.13);
       --ok: #22c55e;
-      --ok-soft: rgba(34, 197, 94, 0.14);
+      --ok-soft: rgba(34, 197, 94, 0.13);
       --warn: #f59e0b;
-      --warn-soft: rgba(245, 158, 11, 0.15);
+      --warn-soft: rgba(245, 158, 11, 0.14);
       --danger: #ef4444;
-      --danger-soft: rgba(239, 68, 68, 0.15);
-      --purple: #a855f7;
-      --purple-soft: rgba(168, 85, 247, 0.15);
+      --danger-soft: rgba(239, 68, 68, 0.14);
+      --purple: #2dd4bf;
+      --purple-soft: rgba(45, 212, 191, 0.13);
 
       /* Legacy variable aliases for SVG diagrams */
       --bg-subtle: var(--bg-hover);
@@ -49,7 +49,7 @@
       --badge-purple-bg: var(--purple-soft);
       --terminal-bg: var(--bg-code);
       --terminal-text: var(--fg);
-      --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35);
+      --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.28);
     }
 
     html[data-theme="light"] {
@@ -64,15 +64,15 @@
       --fg-secondary: #1e293b;
       --fg-muted: #475569;
       --accent: #0284c7;
-      --accent-soft: rgba(2, 132, 199, 0.12);
+      --accent-soft: rgba(2, 132, 199, 0.11);
       --ok: #15803d;
-      --ok-soft: rgba(21, 128, 61, 0.12);
+      --ok-soft: rgba(21, 128, 61, 0.11);
       --warn: #b45309;
-      --warn-soft: rgba(180, 83, 9, 0.14);
+      --warn-soft: rgba(180, 83, 9, 0.13);
       --danger: #b91c1c;
-      --danger-soft: rgba(185, 28, 28, 0.12);
-      --purple: #7e22ce;
-      --purple-soft: rgba(126, 34, 206, 0.12);
+      --danger-soft: rgba(185, 28, 28, 0.11);
+      --purple: #0f766e;
+      --purple-soft: rgba(15, 118, 110, 0.11);
 
       --bg-subtle: var(--bg-hover);
       --border-primary: var(--border);
@@ -92,7 +92,7 @@
       --badge-purple-bg: var(--purple-soft);
       --terminal-bg: var(--bg-code);
       --terminal-text: #f8fafc;
-      --shadow-card: 0 6px 18px rgba(15, 23, 42, 0.08);
+      --shadow-card: 0 4px 16px rgba(15, 23, 42, 0.06);
     }
 
     * {
@@ -109,32 +109,37 @@
       min-height: 100vh;
       display: flex;
       flex-direction: column;
+      -webkit-font-smoothing: antialiased;
     }
 
     code, pre, .mono {
       font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
     }
 
     /* Zone 1: Unified Sticky Topbar */
     header.topbar {
-      height: 64px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      min-height: 60px;
+      height: auto;
+      padding: 10px 24px;
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 24px;
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      gap: 12px;
+      gap: 16px;
     }
 
+    .brand,
     .brand-group {
       display: flex;
       align-items: center;
-      gap: 12px;
-      min-width: 0;
+      gap: 10px;
+      flex-shrink: 0;
+      white-space: nowrap;
     }
 
     .brand-icon {
@@ -166,6 +171,8 @@
     }
 
     .suite-switcher {
+      position: static;
+      transform: none;
       display: inline-flex;
       align-items: center;
       background: var(--bg-elevated);
@@ -173,8 +180,9 @@
       border-radius: 8px;
       padding: 2px;
       gap: 2px;
-      margin-left: 6px;
+      margin-left: 0;
       flex-shrink: 0;
+      white-space: nowrap;
     }
 
     .suite-pill {
@@ -205,10 +213,13 @@
     }
 
     nav.nav-tabs {
+      position: static;
+      transform: none;
       display: flex;
       align-items: center;
       gap: 6px;
       flex-shrink: 0;
+      white-space: nowrap;
     }
 
     .nav-link {
@@ -241,8 +252,9 @@
     .topbar-right {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       flex-shrink: 0;
+      white-space: nowrap;
     }
 
     .status-pill {
@@ -351,6 +363,7 @@
       color: var(--fg);
       cursor: pointer;
       white-space: nowrap;
+      text-decoration: none;
     }
 
     .btn:hover {
@@ -418,7 +431,7 @@
     /* Zone 3: Unified 4-Card "Wow" Proof Telemetry Strip */
     section.wow-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 14px;
       margin-bottom: 16px;
     }
@@ -429,6 +442,8 @@
       border-radius: 12px;
       padding: 14px 16px;
       box-shadow: var(--shadow-card);
+      min-width: 0;
+      overflow: hidden;
     }
 
     .wow-header {
@@ -466,11 +481,13 @@
       padding: 14px 16px;
       margin-bottom: 16px;
       box-shadow: var(--shadow-card);
+      min-width: 0;
+      overflow: hidden;
     }
 
     .worker-rack-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
       margin-top: 10px;
     }
@@ -480,6 +497,8 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 11px 13px;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .worker-pod-header {
@@ -488,11 +507,19 @@
       justify-content: space-between;
       gap: 8px;
       margin-bottom: 8px;
+      min-width: 0;
+    }
+
+    .worker-pod-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .worker-slot-list {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 7px;
     }
 
@@ -503,6 +530,8 @@
       padding: 6px 8px;
       font-family: var(--font-mono);
       font-size: 0.71rem;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .worker-slot-pill.slot-active {
@@ -513,7 +542,7 @@
     /* Zone 5: Unified 2-Column Stage Workspace Split */
     div.stage-grid {
       display: grid;
-      grid-template-columns: 1.55fr 1fr;
+      grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
       gap: 16px;
       align-items: start;
     }
@@ -525,6 +554,8 @@
       padding: 16px 18px;
       box-shadow: var(--shadow-card);
       margin-bottom: 16px;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .card-header {
@@ -685,7 +716,7 @@
 
     .inspector-meta-grid {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
       margin-bottom: 12px;
     }
@@ -695,6 +726,8 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 8px 10px;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .meta-label {
@@ -716,7 +749,7 @@
 
     .phase-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
       margin-bottom: 12px;
     }
@@ -726,6 +759,8 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 8px 9px;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .phase-name {
@@ -792,14 +827,14 @@
 
     .compare-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 14px;
       margin-top: 12px;
     }
 
     .rescue-split {
       display: grid;
-      grid-template-columns: 1fr 1.15fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
       gap: 14px;
     }
 
@@ -840,41 +875,40 @@
       </div>
       <div class="brand-title">
         <h1>Tekton Pipelines on Agent Substrate</h1>
-        <div class="subtitle">fulfillment-api &middot; High-Density gVisor Actor Runner &middot; 3-Pod / 9-Slot WorkerPool (v1.0.0)</div>
-      </div>
-
-      <!-- Cross-Platform Suite Switcher Pill Group -->
-      <div class="suite-switcher" role="navigation" aria-label="Cross-Platform Suite Switcher">
-        <a id="suite-link-flux" href="http://localhost:18080" data-suite-port="18080" class="suite-pill">Flux :18080</a>
-        <a id="suite-link-argo" href="http://localhost:18081" data-suite-port="18081" class="suite-pill">Argo :18081</a>
-        <a id="suite-link-tekton" href="http://localhost:18090" data-suite-port="18090" class="suite-pill active">Tekton :18090</a>
+        <div class="subtitle">fulfillment-api &middot; 3-Pod / 9-Slot gVisor WorkerPool</div>
       </div>
     </div>
 
-    <nav class="nav-tabs" aria-label="Primary Navigation">
-      <a href="/" class="nav-link active" id="top-nav-mission" onclick="navigate(event, '/')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-        Mission Control
-      </a>
-      <a href="/about" class="nav-link" id="top-nav-about" onclick="navigate(event, '/about')">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-        How It Works
-      </a>
-    </nav>
+    <!-- Cross-Platform Suite Switcher Pill Group -->
+    <div class="suite-switcher" role="navigation" aria-label="Cross-Platform Suite Switcher">
+      <a id="suite-link-hub" href="https://cicd.substrate.learngke.dev/" class="suite-pill">Command Hub</a>
+      <a id="suite-link-flux" href="https://flux-actors.cicd.substrate.learngke.dev/" class="suite-pill">Flux Telemetry</a>
+      <a id="suite-link-argo" href="https://argo-actors.cicd.substrate.learngke.dev/" class="suite-pill">Argo Telemetry</a>
+      <a id="suite-link-tekton" href="https://tekton-actors.cicd.substrate.learngke.dev/" class="suite-pill active">Tekton Telemetry</a>
+    </div>
 
     <div class="topbar-right">
-      <div class="status-pill">
-        <span class="status-dot"></span>
-        <span id="top-repo-pill" class="mono">fulfillment-api.git @ main (v1)</span>
-      </div>
-      <div class="status-pill pill-ok">
-        <span id="top-secret-pill" class="mono">ZERO_AMBIENT_SECRETS</span>
-      </div>
-      <div class="status-pill">
-        <span id="atespace-indicator" class="mono">atespace: tekton-actors</span>
-      </div>
+      <nav class="nav-tabs" aria-label="Primary Navigation">
+        <a href="/" class="nav-link active" id="top-nav-mission" onclick="navigate(event, '/')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          Telemetry Console
+        </a>
+        <a href="/about" class="nav-link" id="top-nav-about" onclick="navigate(event, '/about')">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+          How It Works
+        </a>
+      </nav>
 
-      <div class="theme-toggle" role="group" aria-label="Projector Theme Toggle">
+      <span id="sso-session-pill" class="status-pill pill-ok" title="Authenticated via Google Workspace SSO (cicd-auth-gateway)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        <span id="sso-user-email">Google SSO Verified</span>
+      </span>
+      <a id="sso-signout-link" href="/logout" class="suite-pill" title="Sign out of Google Workspace SSO">Sign out</a>
+
+      <div class="theme-toggle" id="theme-toggle" role="group" aria-label="Projector Theme Toggle">
         <button type="button" id="theme-dark-btn" class="theme-btn active" onclick="setTheme('dark')" title="Dark Mode" aria-label="Dark Mode">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
@@ -898,45 +932,52 @@
   </header>
 
   <main class="page-shell">
-    <!-- MISSION CONTROL SHELL (active on /, /compare, /rescue) -->
+    <!-- TELEMETRY CONSOLE SHELL (active on /, /compare, /rescue) -->
     <div id="view-mission-shell" class="view-panel active">
-      <!-- ZONE 2: Unified Stage Command Bar (FIRST element in <main class="page-shell">) -->
-      <section class="action-bar" aria-label="Unified Stage Command Bar">
+      <!-- ZONE 2: View-Only Telemetry Status & Cross-Link Bar -->
+      <section class="action-bar" aria-label="View-Only Telemetry Status and Cross-Link Bar">
         <div class="action-group">
-          <button type="button" class="btn btn-primary" onclick="pushCodeScenario('release', 'wave')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path></svg>
-            Push Release Code (High-Density Build Wave)
-          </button>
-          <button type="button" class="btn btn-warn" onclick="pushCodeScenario('buggy-code', 'pipeline')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-            Push Buggy Code (pricing.go Regression)
-          </button>
-          <button type="button" class="btn btn-danger" onclick="injectSandboxFault()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-            Inject Sandbox Fault / OOM
-          </button>
-          <button type="button" class="btn btn-ok" onclick="quickRevertToLastGreen()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
-            RevertActor Recovery (&lt;1s)
-          </button>
-          <button type="button" id="btn-approve-parked" class="btn btn-ok" style="display:none;" onclick="approveParkedGate()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"></polyline></svg>
-            Approve Parked Gate
-          </button>
-        </div>
-
-        <div class="action-group">
-          <select id="select-pipelinerun" class="input-text mono" onchange="onSelectPipelineRun(this.value)" aria-label="Select PipelineRun">
+          <span class="badge badge-accent mono">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <span>VIEW-ONLY TELEMETRY DASHBOARD</span>
+          </span>
+          <div class="status-pill" id="top-git-pill">
+            <span class="status-dot"></span>
+            <span id="top-repo-pill" class="mono">fulfillment-api.git @ main (v1)</span>
+          </div>
+          <div class="status-pill pill-ok">
+            <span id="top-secret-pill" class="mono">ZERO_AMBIENT_SECRETS</span>
+          </div>
+          <div class="status-pill" id="atespace-pill">
+            <span id="atespace-indicator" class="mono">atespace: tekton-actors</span>
+          </div>
+          <span id="live-run-status-badge" class="badge badge-accent mono">READY</span>
+          <select id="select-pipelinerun" class="input-text mono" onchange="onSelectPipelineRun(this.value)" aria-label="Inspect PipelineRun">
             <option value="">Latest PipelineRun</option>
           </select>
           <button type="button" class="btn" onclick="inspectZeroSecretsEnv()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
             Inspect Env (0 Secrets)
           </button>
-          <button type="button" class="btn" onclick="stageReset()">
-            Stage Reset
-          </button>
-          <span id="live-run-status-badge" class="badge badge-accent mono">READY</span>
+        </div>
+
+        <div class="action-group">
+          <a href="https://cicd.substrate.learngke.dev/" class="btn btn-primary" title="Trigger releases, regressions, sandbox faults, or RevertActor recovery from the top-level Command Hub">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <span>Command Hub (Trigger Changes)</span>
+          </a>
+          <a href="https://gitea.cicd.substrate.learngke.dev/substrate/fulfillment-api" target="_blank" rel="noopener" class="btn">
+            <span>Gitea Repo</span>
+          </a>
+          <a href="https://tekton.cicd.substrate.learngke.dev/#/namespaces/tekton-actors/pipelineruns" target="_blank" rel="noopener" class="btn">
+            <span>Official Tekton UI</span>
+          </a>
+          <a href="https://app-tekton.cicd.substrate.learngke.dev/" target="_blank" rel="noopener" class="btn">
+            <span>Live App (app-tekton)</span>
+          </a>
         </div>
       </section>
 
@@ -1009,30 +1050,6 @@
 
           <!-- SUB-VIEW A: Pipeline DAG Studio (/) -->
           <div id="subview-studio" class="subview-panel active">
-            <div class="controls-row" style="justify-content:space-between;margin-bottom:10px;padding:8px 11px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;">
-              <div class="controls-row">
-                <label class="toggle-check">
-                  <input type="checkbox" id="chk-require-approval" />
-                  Pause at Zero-Slot ApprovalGate
-                </label>
-                <label class="toggle-check">
-                  <input type="checkbox" id="chk-inject-bug" />
-                  Inject Pricing Bug (inject-bug=true)
-                </label>
-              </div>
-              <div class="controls-row">
-                <button type="button" class="btn btn-primary" style="padding:5px 10px;font-size:0.74rem;" onclick="triggerPipeline('actor')">
-                  Run Actor Pipeline
-                </button>
-                <button type="button" class="btn" style="padding:5px 10px;font-size:0.74rem;" onclick="triggerPipeline('pod-pvc')">
-                  Run Cold Pod+PVC Baseline
-                </button>
-                <button type="button" class="btn" style="padding:5px 10px;font-size:0.74rem;" onclick="launchHighDensityWave()">
-                  12-Turn Cohort Wave
-                </button>
-              </div>
-            </div>
-
             <div id="approval-gate-banner" style="display:none;"></div>
 
             <div class="dag-container" id="dag-svg-wrapper"></div>
@@ -1050,10 +1067,6 @@
           <div id="subview-compare" class="subview-panel">
             <div class="controls-row" style="justify-content:space-between;margin-bottom:10px;">
               <span style="font-size:0.76rem;color:var(--fg-secondary);">Both modes run the exact same unmodified <code>tekton.dev/v1</code> <code>release-pipeline</code> and <code>Task</code> definitions.</span>
-              <button type="button" class="btn btn-primary" onclick="launchHeadToHeadRace()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                Launch Simultaneous Race (Actor vs. Pod+PVC)
-              </button>
             </div>
 
             <table class="table-clean">
@@ -1100,39 +1113,17 @@
           <div id="subview-rescue" class="subview-panel">
             <div class="controls-row" style="justify-content:space-between;margin-bottom:10px;">
               <span style="font-size:0.76rem;color:var(--fg-secondary);">When a step fails, Tekton checkpoints <code>/workspace</code> and warm <code>GOCACHE</code> into an immutable <code>failure-&lt;taskrun&gt;</code> Snapshot Tag.</span>
-              <button type="button" class="btn btn-warn" onclick="triggerBuggyPipeline()">
-                1. Trigger Buggy Release (inject-bug=true)
-              </button>
             </div>
 
             <div class="rescue-split">
               <div>
-                <div style="font-size:0.74rem;font-weight:700;margin-bottom:6px;">Captured Failure Snapshot Tags (<code>failure-*</code>)</div>
+                <div style="font-size:0.74rem;font-weight:700;margin-bottom:6px;">Captured Snapshot Tags (<code>failure-*</code> / <code>fixed-*</code>)</div>
                 <div id="failure-tags-list"></div>
-                <div style="font-size:0.74rem;font-weight:700;margin:12px 0 6px;">1-Click Hot-Patch Diff (<code>source/app/pricing.go</code>)</div>
-                <pre id="rescue-diff-preview" class="terminal-box mono" style="max-height:175px;"></pre>
               </div>
 
               <div>
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px;flex-wrap:wrap;">
-                  <span style="font-size:0.74rem;font-weight:700;">Interactive Rescue Actor Shell &amp; Mid-DAG Resume</span>
-                  <span id="active-rescue-badge" class="badge badge-purple">No Rescue Actor selected</span>
-                </div>
-
-                <div class="controls-row" style="margin-bottom:8px;">
-                  <input type="text" id="rescue-actor-input" class="input-text mono" placeholder="rescue-actor-name" style="width:155px;" />
-                  <input type="text" id="rescue-orig-pr-input" class="input-text mono" placeholder="failed-pipelinerun" style="width:155px;" />
-                  <button type="button" class="btn" onclick="runRescueInspect('cat source/app/pricing.go')">Inspect</button>
-                  <button type="button" class="btn btn-primary" onclick="applyRescueHotPatch()">2. Patch Fix</button>
-                  <button type="button" class="btn btn-ok" onclick="commitAndResumePipeline()">3. Mint Tag &amp; Resume</button>
-                </div>
-
-                <div class="controls-row" style="margin-bottom:8px;">
-                  <input type="text" id="rescue-cmd-input" class="input-text mono" value="cd source/app && GOCACHE=/workspace/source/.gocache GOPROXY=off go test -v ./..." style="flex:1;" />
-                  <button type="button" class="btn" onclick="runCustomRescueCommand()">Exec</button>
-                </div>
-
-                <pre id="rescue-console-output" class="terminal-box mono" style="max-height:210px;">Fork a Rescue Actor from any failure-* Snapshot Tag on the left to inspect /workspace, run go test against the warm GOCACHE, apply the 1-line pricing.go fix, and resume mid-DAG skipping clone-and-build.</pre>
+                <div style="font-size:0.74rem;font-weight:700;margin-bottom:6px;">Reference Hot-Patch Diff (<code>source/app/pricing.go</code>)</div>
+                <pre id="rescue-diff-preview" class="terminal-box mono" style="max-height:240px;"></pre>
               </div>
             </div>
           </div>
@@ -1196,16 +1187,13 @@
             </div>
           </div>
 
-          <!-- 3. Snapshot Lineage & Revert Controls -->
+          <!-- 3. Snapshot Lineage & Zero-Secret Audit -->
           <div class="lineage-bar">
             <div style="font-size:0.73rem;">
               <span style="color:var(--fg-muted);font-weight:600;">SNAPSHOT LINEAGE:</span>
               <span class="mono" id="insp-lineage-tags" style="color:var(--purple);font-weight:700;margin-left:4px;">snap-green-v1 &rarr; ms-fanout</span>
             </div>
             <div class="controls-row" style="gap:6px;">
-              <button type="button" class="btn btn-ok" style="padding:4px 9px;font-size:0.71rem;" onclick="quickRevertToLastGreen()">
-                RevertActor (&lt;1s)
-              </button>
               <button type="button" class="btn" style="padding:4px 9px;font-size:0.71rem;" onclick="inspectZeroSecretsEnv()">
                 Inspect Env (0 Secrets)
               </button>
@@ -1227,7 +1215,7 @@
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
               Interactive Architecture: How Tekton Pipelines Run on Agent Substrate Actors
             </div>
-            <div style="font-size:0.76rem;color:var(--fg-muted);margin-top:4px;">Visual topology of Actor Workspace Binding, Volume-Preserving Template Repointing, Copy-on-Write Snapshot Tag Fan-Out, and Zero-Secret Egress Injection across the 3-Platform Suite (Flux :18080, Argo :18081, Tekton :18090).</div>
+            <div style="font-size:0.76rem;color:var(--fg-muted);margin-top:4px;">Visual topology of Actor Workspace Binding, Volume-Preserving Template Repointing, Copy-on-Write Snapshot Tag Fan-Out, and Zero-Secret Egress Injection across the 3-Platform Suite (flux-actors, argo-actors, tekton-actors).</div>
           </div>
         </div>
 
@@ -1322,7 +1310,7 @@
 
             <rect x="840" y="35" width="255" height="120" rx="10" fill="var(--bg-surface)" stroke="#22c55e" stroke-width="2"/>
             <text x="856" y="62" fill="var(--ok)" font-size="11" font-weight="700" font-family="monospace">SHARED GIT + OCI SERVER</text>
-            <text x="856" y="84" fill="var(--fg)" font-size="12" font-weight="700">git-oci.demo-repo.svc</text>
+            <text x="856" y="84" fill="var(--fg)" font-size="12" font-weight="700">gitea.cicd.substrate.learngke.dev</text>
             <text x="856" y="106" fill="var(--fg-muted)" font-size="11" font-family="monospace">ate-secret://k8s.io/.../token</text>
             <text x="856" y="126" fill="var(--fg-muted)" font-size="11" font-family="monospace">Shared across Tekton, Argo &amp; Flux</text>
           </svg>
@@ -1379,14 +1367,16 @@
     let selectedTaskName = "clone-and-build";
     let parkedApprovalGateName = "";
 
-    // Dynamic Cross-Platform Suite Switcher URLs using current hostname
-    (function initSuiteLinks() {
-      const proto = window.location.protocol || "http:";
-      const host = window.location.hostname || "localhost";
-      document.querySelectorAll("[data-suite-port]").forEach(el => {
-        const port = el.getAttribute("data-suite-port");
-        el.setAttribute("href", proto + "//" + host + ":" + port + "/");
-      });
+    (function refreshAuthSession() {
+      fetch("/api/auth/session", { credentials: "same-origin" })
+        .then(r => r.json())
+        .then(data => {
+          const emailEl = document.getElementById("sso-user-email");
+          if (emailEl && data && data.subject) {
+            emailEl.textContent = data.subject + " · Google SSO";
+          }
+        })
+        .catch(() => {});
     })();
 
     function setTheme(theme) {
@@ -1587,11 +1577,11 @@
         podCards.push(
           '<div class="worker-pod-card">' +
             '<div class="worker-pod-header">' +
-              '<div>' +
+              '<div class="worker-pod-title" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
                 '<span class="mono" style="font-size:0.78rem;font-weight:700;color:var(--accent);">W' + (i + 1) + '</span> ' +
-                '<span class="mono" style="font-size:0.75rem;font-weight:700;">' + escapeHTML(pod.name) + '</span>' +
+                '<span class="mono" style="font-size:0.75rem;font-weight:700;" title="' + escapeHTML(pod.name) + '">' + escapeHTML(pod.name) + '</span>' +
               '</div>' +
-              '<span class="badge ' + badgeCls + '">' + usedCount + '/3 Slots</span>' +
+              '<span class="badge ' + badgeCls + '" style="flex-shrink:0;">' + usedCount + '/3 Slots</span>' +
             '</div>' +
             '<div class="worker-slot-list">' + slotsHTML + '</div>' +
           '</div>'
@@ -1628,17 +1618,14 @@
 
     function renderApprovalBanner(pr, gates, sub) {
       const box = document.getElementById("approval-gate-banner");
-      const topBtn = document.getElementById("btn-approve-parked");
       if (!pr || !pr.pendingApprovalRun) {
         box.style.display = "none";
         box.innerHTML = "";
         parkedApprovalGateName = "";
-        if (topBtn) topBtn.style.display = "none";
         return;
       }
       const gate = gates.find(g => g.name === pr.pendingApprovalRun) || { name: pr.pendingApprovalRun };
       parkedApprovalGateName = gate.name;
-      if (topBtn) topBtn.style.display = "inline-flex";
 
       const slotMsg = pr.mode === "actor"
         ? "Workspace Actor (" + escapeHTML(pr.workspaceActor || "ws-" + pr.name) + ") is SUSPENDED in GCS consuming 0 WorkerPool slots."
@@ -1649,10 +1636,6 @@
         '<div>' +
           '<div style="font-weight:700;font-size:0.8rem;">Zero-Slot ApprovalGate Paused: <span class="mono">' + escapeHTML(gate.name) + '</span></div>' +
           '<div style="font-size:0.74rem;color:var(--fg-secondary);margin-top:2px;">' + escapeHTML(gate.description || "") + " &mdash; " + slotMsg + '</div>' +
-        '</div>' +
-        '<div class="controls-row">' +
-          '<button type="button" class="btn btn-ok" onclick="submitApprovalDecision(\'' + escapeHTML(gate.name) + '\', \'approved\')">Approve Release</button>' +
-          '<button type="button" class="btn btn-danger" onclick="submitApprovalDecision(\'' + escapeHTML(gate.name) + '\', \'rejected\')">Reject</button>' +
         '</div>';
     }
 
@@ -1950,7 +1933,7 @@
         "==> [Outbound Egress Policy Inspection]\n" +
         "  • Actor EgressPolicy: default (atespace=tekton-actors)\n" +
         "  • Credential URI:     ate-secret://k8s.io/default/tekton-actors/git-oci-auth/token\n" +
-        "  • Allowed Hostnames:  git-oci.demo-repo.svc.cluster.local, *.demo-repo.svc.cluster.local\n" +
+        "  • Git Repository:     https://gitea.cicd.substrate.learngke.dev/substrate/fulfillment-api.git\n" +
         "  • Verified Rewrites:  " + (audit.authenticated || 0) + " authenticated / " + (audit.rejected || 0) + " unauthenticated 401 challenges\n" +
         "  • Posture Result:     ZERO_AMBIENT_SECRETS";
       setTimeout(() => { viewer.dataset.manualOverride = "false"; }, 8000);
@@ -2025,14 +2008,12 @@
         return;
       }
 
-      let html = '<table class="table-clean"><thead><tr><th>Snapshot Tag</th><th>PipelineRun</th><th>Action</th></tr></thead><tbody>';
+      let html = '<table class="table-clean"><thead><tr><th>Snapshot Tag</th><th>Source / PipelineRun</th><th>Lineage Status</th></tr></thead><tbody>';
       failedPRs.forEach(pr => {
         let fTag = "";
-        let tmpl = "";
         (pr.tasks || []).forEach(t => {
           if (t.failureTag) {
             fTag = t.failureTag;
-            tmpl = t.actorTemplate || "";
           }
         });
         if (!fTag && failTags.length > 0) {
@@ -2042,7 +2023,7 @@
           html += '<tr>' +
             '<td class="mono">' + escapeHTML(fTag) + '</td>' +
             '<td class="mono">' + escapeHTML(pr.name) + '</td>' +
-            '<td><button type="button" class="btn btn-primary" style="padding:4px 9px;font-size:0.7rem;" onclick="forkRescueFromTag(\'' + escapeHTML(fTag) + '\', \'' + escapeHTML(pr.name) + '\', \'' + escapeHTML(tmpl) + '\')">Fork Rescue Actor</button></td>' +
+            '<td><span class="badge badge-warn">Captured Failure Snapshot</span></td>' +
           '</tr>';
         }
       });
@@ -2050,7 +2031,7 @@
         html += '<tr>' +
           '<td class="mono"><span class="badge ' + (t.kind === "fixed" ? "badge-ok" : "badge-danger") + '">' + escapeHTML(t.name) + '</span></td>' +
           '<td class="mono">source: ' + escapeHTML(t.sourceActor || "-") + '</td>' +
-          '<td>' + (t.kind === "failure" ? '<button type="button" class="btn" style="padding:4px 9px;font-size:0.7rem;" onclick="forkRescueFromTag(\'' + escapeHTML(t.name) + '\', \'\', \'\')">Fork Rescue Actor</button>' : '<span class="mono" style="font-size:0.7rem;color:var(--ok);">Ready for sourceTag</span>') + '</td>' +
+          '<td><span class="mono" style="font-size:0.7rem;color:var(--fg-secondary);">' + (t.kind === "fixed" ? "Ready for sourceTag" : "Immutable Failure Tag") + '</span></td>' +
         '</tr>';
       });
       html += '</tbody></table>';
