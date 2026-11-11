@@ -1,0 +1,31 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: release-pod-pvc-sample
+  namespace: tekton-actors
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+    tekton.ate.dev/execution-mode: pod-pvc
+spec:
+  pipelineRef:
+    name: release-pipeline
+  params:
+    - name: image-tag
+      value: v1.0.0-pod-pvc
+    - name: inject-bug
+      value: "false"
+    - name: approval-decision
+      value: ""
+  # Stock Kubernetes Pod + ReadWriteOnce PVC + mounted Secret workspace baseline.
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 2Gi
+    - name: creds
+      secret:
+        secretName: git-oci-auth

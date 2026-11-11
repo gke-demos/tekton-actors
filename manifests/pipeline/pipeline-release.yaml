@@ -1,0 +1,148 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: release-pipeline
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  description: >-
+    Shared Tekton v1 release workflow for fulfillment-api that runs identically on
+    Agent Substrate Actors (Actor Workspace Binding + zero-secret EgressPolicy) and
+    stock Kubernetes Pods + PVCs (volumeClaimTemplate + mounted Secret workspace).
+  params:
+    - name: git-url
+      type: string
+      default: http://git-oci.tekton-actors.svc.cluster.local/repo/fulfillment-api.git
+      description: In-cluster Git Smart-HTTP repository URL.
+    - name: registry-url
+      type: string
+      default: http://git-oci.tekton-actors.svc.cluster.local
+      description: In-cluster OCI Distribution v2 registry base URL.
+    - name: image-repo
+      type: string
+      default: fulfillment-api
+      description: Target OCI repository name.
+    - name: image-tag
+      type: string
+      default: latest
+      description: Target OCI image tag.
+    - name: inject-bug
+      type: string
+      default: "false"
+      description: Set to "true" to check out the "buggy" branch and trigger Snapshot Tag failure capture in unit-test.
+    - name: approval-decision
+      type: string
+      default: ""
+      description: >-
+        Initial decision for the ApprovalGate CustomRun ("approved" auto-passes immediately;
+        "" pauses at PendingApproval while the Workspace Actor sits SUSPENDED at 0 WorkerPool slots).
+  workspaces:
+    - name: source
+      description: Primary shared pipeline workspace (Actor durable_dir or Pod PVC).
+    - name: creds
+      optional: true
+      description: Optional mounted Secret workspace used only in Pod+PVC baseline mode.
+  results:
+    - name: test-summary
+      description: Unit test summary from unit-test branch.
+      value: $(tasks.unit-test.results.test-summary)
+    - name: secret-posture
+      description: Verified sandbox credential posture from vuln-scan branch.
+      value: $(tasks.vuln-scan.results.secret-posture)
+    - name: scan-report
+      description: Structured security scan JSON report from vuln-scan branch.
+      value: $(tasks.vuln-scan.results.scan-report)
+    - name: smoke-status
+      description: Live loopback HTTP smoke status from integration-smoke branch.
+      value: $(tasks.integration-smoke.results.smoke-status)
+    - name: approval-decision
+      description: Recorded release approval decision from release-approval gate.
+      value: $(tasks.release-approval.results.decision)
+    - name: image-digest
+      description: Published OCI v2 image digest from package-and-publish.
+      value: $(tasks.package-and-publish.results.image-digest)
+  tasks:
+    - name: clone-and-build
+      taskRef:
+        name: clone-and-build
+      params:
+        - name: git-url
+          value: $(params.git-url)
+        - name: inject-bug
+          value: $(params.inject-bug)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: creds
+          workspace: creds
+
+    - name: unit-test
+      runAfter:
+        - clone-and-build
+      taskRef:
+        name: unit-test
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: vuln-scan
+      runAfter:
+        - clone-and-build
+      taskRef:
+        name: vuln-scan
+      workspaces:
+        - name: source
+          workspace: source
+        - name: creds
+          workspace: creds
+
+    - name: integration-smoke
+      runAfter:
+        - clone-and-build
+      taskRef:
+        name: integration-smoke
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: release-approval
+      runAfter:
+        - unit-test
+        - vuln-scan
+        - integration-smoke
+      taskSpec:
+        apiVersion: tekton.ate.dev/v1alpha1
+        kind: ApprovalGate
+        spec:
+          description: Approve production OCI release after verification checks pass
+      params:
+        - name: decision
+          value: $(params.approval-decision)
+        - name: description
+          value: "Approve release $(params.image-repo):$(params.image-tag) (posture: $(tasks.vuln-scan.results.secret-posture))"
+
+    - name: package-and-publish
+      runAfter:
+        - release-approval
+      taskRef:
+        name: package-and-publish
+      params:
+        - name: registry-url
+          value: $(params.registry-url)
+        - name: image-repo
+          value: $(params.image-repo)
+        - name: image-tag
+          value: $(params.image-tag)
+        - name: test-summary
+          value: $(tasks.unit-test.results.test-summary)
+        - name: secret-posture
+          value: $(tasks.vuln-scan.results.secret-posture)
+        - name: smoke-status
+          value: $(tasks.integration-smoke.results.smoke-status)
+        - name: approval-decision
+          value: $(tasks.release-approval.results.decision)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: creds
+          workspace: creds

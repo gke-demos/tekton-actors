@@ -1,0 +1,128 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: integration-smoke
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+spec:
+  description: >-
+    Boots the compiled fulfillment-api binary on loopback inside the isolated
+    sandbox and exercises /healthz and /api/quote over HTTP.
+  workspaces:
+    - name: source
+      description: Shared pipeline workspace containing compiled bin/fulfillment-api.
+  results:
+    - name: smoke-status
+      description: Live HTTP smoke test verification status.
+  steps:
+    - name: smoke-http
+      image: golang:1.26-bookworm
+      script: |
+        #!/bin/sh
+        set -eu
+
+        export GOCACHE="${TEKTON_GOCACHE_OVERRIDE:-$(workspaces.source.path)/.gocache}"
+        export GOPROXY=off
+        export GOSUMDB=off
+        export GOTOOLCHAIN=local
+        export CGO_ENABLED=0
+
+        SMOKE_SRC=$(mktemp "${TMPDIR:-/tmp}/smoke-XXXXXX.go")
+        trap 'rm -f "${SMOKE_SRC}"' EXIT
+        cat > "${SMOKE_SRC}" << 'EOF'
+        package main
+
+        import (
+        	"bytes"
+        	"context"
+        	"encoding/json"
+        	"fmt"
+        	"net"
+        	"net/http"
+        	"os"
+        	"os/exec"
+        	"time"
+        )
+
+        func main() {
+        	binPath := os.Args[1]
+        	resultPath := os.Args[2]
+
+        	ln, err := net.Listen("tcp", "127.0.0.1:0")
+        	if err != nil {
+        		fmt.Fprintf(os.Stderr, "reserve loopback port: %v\n", err)
+        		os.Exit(1)
+        	}
+        	addr := ln.Addr().String()
+        	_ = ln.Close()
+
+        	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+        	defer cancel()
+
+        	cmd := exec.CommandContext(ctx, binPath, "--listen="+addr)
+        	cmd.Stdout = os.Stdout
+        	cmd.Stderr = os.Stderr
+        	if err := cmd.Start(); err != nil {
+        		fmt.Fprintf(os.Stderr, "start fulfillment-api: %v\n", err)
+        		os.Exit(1)
+        	}
+        	defer func() {
+        		_ = cmd.Process.Kill()
+        		_, _ = cmd.Process.Wait()
+        	}()
+
+        	baseURL := "http://" + addr
+        	client := &http.Client{Timeout: 2 * time.Second}
+
+        	ready := false
+        	for i := 0; i < 60; i++ {
+        		resp, reqErr := client.Get(baseURL + "/healthz")
+        		if reqErr == nil {
+        			resp.Body.Close()
+        			if resp.StatusCode == http.StatusOK {
+        				ready = true
+        				break
+        			}
+        		}
+        		time.Sleep(50 * time.Millisecond)
+        	}
+        	if !ready {
+        		fmt.Fprintln(os.Stderr, "fulfillment-api failed to become ready on /healthz")
+        		os.Exit(1)
+        	}
+
+        	payload := []byte(`{"items":[{"sku":"GKE-NODE-POOL","quantity":3,"unitCents":4000}],"tier":"standard","taxBps":825}`)
+        	resp, err := client.Post(baseURL+"/api/quote", "application/json", bytes.NewReader(payload))
+        	if err != nil {
+        		fmt.Fprintf(os.Stderr, "POST /api/quote: %v\n", err)
+        		os.Exit(1)
+        	}
+        	defer resp.Body.Close()
+        	if resp.StatusCode != http.StatusOK {
+        		fmt.Fprintf(os.Stderr, "POST /api/quote unexpected status %d\n", resp.StatusCode)
+        		os.Exit(1)
+        	}
+        	var quote struct {
+        		TotalCents int `json:"totalCents"`
+        	}
+        	if err := json.NewDecoder(resp.Body).Decode(&quote); err != nil {
+        		fmt.Fprintf(os.Stderr, "decode quote response: %v\n", err)
+        		os.Exit(1)
+        	}
+        	if quote.TotalCents != 12990 {
+        		fmt.Fprintf(os.Stderr, "unexpected smoke quote totalCents=%d, want 12990\n", quote.TotalCents)
+        		os.Exit(1)
+        	}
+
+        	status := fmt.Sprintf("ok (healthz=200, quote=%d cents)", quote.TotalCents)
+        	if err := os.WriteFile(resultPath, []byte(status), 0o644); err != nil {
+        		fmt.Fprintf(os.Stderr, "write smoke-status: %v\n", err)
+        		os.Exit(1)
+        	}
+        	fmt.Printf("==> Integration smoke passed: %s\n", status)
+        }
+        EOF
+
+        go run "${SMOKE_SRC}" \
+          "$(workspaces.source.path)/bin/fulfillment-api" \
+          "$(results.smoke-status.path)"

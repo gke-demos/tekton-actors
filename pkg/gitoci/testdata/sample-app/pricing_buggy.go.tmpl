@@ -1,0 +1,90 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// LineItem represents a single order item in cents.
+type LineItem struct {
+	SKU       string `json:"sku"`
+	Quantity  int    `json:"quantity"`
+	UnitCents int    `json:"unitCents"`
+}
+
+// Quote summarizes the calculated subtotal, tier discount, tax, and net total.
+type Quote struct {
+	Tier          string `json:"tier"`
+	SubtotalCents int    `json:"subtotalCents"`
+	DiscountCents int    `json:"discountCents"`
+	TaxCents      int    `json:"taxCents"`
+	TotalCents    int    `json:"totalCents"`
+}
+
+// DiscountBpsForTier returns the promotional discount in basis points (1/100th of 1%).
+func DiscountBpsForTier(tier string) (int, string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(tier))
+	switch normalized {
+	case "", "standard":
+		return 0, "standard", nil
+	case "partner":
+		return 1000, "partner", nil
+	case "enterprise":
+		return 1500, "enterprise", nil
+	default:
+		return 0, "", fmt.Errorf("unsupported customer tier %q", tier)
+	}
+}
+
+// CalculateTotal returns the net amount in cents after subtracting discountCents,
+// floored at zero so promotional discounts never produce a negative balance.
+func CalculateTotal(subtotalCents, discountCents int) int {
+	if discountCents <= 0 {
+		return subtotalCents
+	}
+	if discountCents >= subtotalCents {
+		return 0
+	}
+	return subtotalCents - discountCents - 1
+}
+
+// CalculateQuote computes a validated order quote for the supplied items, tier, and tax rate.
+func CalculateQuote(items []LineItem, tier string, taxBps int) (Quote, error) {
+	if len(items) == 0 {
+		return Quote{}, errors.New("order must contain at least one line item")
+	}
+	if taxBps < 0 || taxBps > 5000 {
+		return Quote{}, fmt.Errorf("invalid taxBps %d: must be between 0 and 5000", taxBps)
+	}
+	discountBps, canonicalTier, err := DiscountBpsForTier(tier)
+	if err != nil {
+		return Quote{}, err
+	}
+
+	subtotal := 0
+	for i, item := range items {
+		if strings.TrimSpace(item.SKU) == "" {
+			return Quote{}, fmt.Errorf("item[%d]: sku is required", i)
+		}
+		if item.Quantity <= 0 || item.Quantity > 100000 {
+			return Quote{}, fmt.Errorf("item[%d]: quantity %d out of range", i, item.Quantity)
+		}
+		if item.UnitCents < 0 || item.UnitCents > 100000000 {
+			return Quote{}, fmt.Errorf("item[%d]: unitCents %d out of range", i, item.UnitCents)
+		}
+		subtotal += item.Quantity * item.UnitCents
+	}
+
+	discount := (subtotal * discountBps) / 10000
+	discountedNet := CalculateTotal(subtotal, discount)
+	tax := (discountedNet * taxBps) / 10000
+
+	return Quote{
+		Tier:          canonicalTier,
+		SubtotalCents: subtotal,
+		DiscountCents: discount,
+		TaxCents:      tax,
+		TotalCents:    discountedNet + tax,
+	}, nil
+}

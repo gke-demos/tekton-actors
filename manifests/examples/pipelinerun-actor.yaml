@@ -1,0 +1,26 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: release-actor-sample
+  namespace: tekton-actors
+  labels:
+    app.kubernetes.io/part-of: tekton-actors
+    tekton.ate.dev/execution-mode: actor
+spec:
+  pipelineRef:
+    name: release-pipeline
+  params:
+    - name: image-tag
+      value: v1.0.0-actor
+    - name: inject-bug
+      value: "false"
+    - name: approval-decision
+      value: ""
+  # Actor Workspace Binding: binds ONLY "source" to an Agent Substrate Actor in
+  # atespace "tekton-actors" with per-Actor EgressPolicy credential injection
+  # (leaving optional "creds" unbound so zero secrets ever enter the sandbox).
+  workspaces:
+    - name: source
+      actor:
+        atespace: tekton-actors
+        egressSecret: git-oci-auth
