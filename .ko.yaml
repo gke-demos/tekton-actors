@@ -1,0 +1,14 @@
+defaultBaseImage: gcr.io/distroless/static-debian12:nonroot
+defaultPlatforms:
+  - linux/amd64
+defaultEnv:
+  - CGO_ENABLED=0
+defaultLdflags:
+  - -s -w
+builds:
+  - id: step-supervisor
+    main: ./cmd/step-supervisor
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
