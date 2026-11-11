@@ -47,6 +47,9 @@ func TestCalculateTotal(t *testing.T) {
 }
 
 func TestCalculateQuote(t *testing.T) {
+	if EnterpriseDiscountBps < 0 || EnterpriseDiscountBps > 8000 {
+		t.Fatalf("EnterpriseDiscountBps = %d out of valid policy range [0, 8000]", EnterpriseDiscountBps)
+	}
 	items := []LineItem{
 		{SKU: "GKE-SANDBOX-SLOT", Quantity: 4, UnitCents: 2500},
 	}
@@ -58,14 +61,17 @@ func TestCalculateQuote(t *testing.T) {
 	if quote.SubtotalCents != 10000 {
 		t.Fatalf("SubtotalCents = %d, want 10000", quote.SubtotalCents)
 	}
-	if quote.DiscountCents != 1500 {
-		t.Fatalf("DiscountCents = %d, want 1500", quote.DiscountCents)
+	wantDiscount := (10000 * EnterpriseDiscountBps) / 10000
+	if quote.DiscountCents != wantDiscount {
+		t.Fatalf("DiscountCents = %d, want %d", quote.DiscountCents, wantDiscount)
 	}
-	if quote.TaxCents != 680 {
-		t.Fatalf("TaxCents = %d, want 680", quote.TaxCents)
+	wantNet := 10000 - wantDiscount
+	wantTax := (wantNet * 800) / 10000
+	if quote.TaxCents != wantTax {
+		t.Fatalf("TaxCents = %d, want %d", quote.TaxCents, wantTax)
 	}
-	if quote.TotalCents != 9180 {
-		t.Fatalf("TotalCents = %d, want 9180", quote.TotalCents)
+	if quote.TotalCents != wantNet+wantTax {
+		t.Fatalf("TotalCents = %d, want %d", quote.TotalCents, wantNet+wantTax)
 	}
 
 	if _, err := CalculateQuote(nil, "standard", 0); err == nil {

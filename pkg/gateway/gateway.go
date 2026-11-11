@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gke-demos/tekton-actors/pkg/approvalgate"
@@ -56,8 +57,10 @@ type Config struct {
 
 // Server implements the Mission-Control HTTP handler.
 type Server struct {
-	cfg     Config
-	handler http.Handler
+	cfg              Config
+	handler          http.Handler
+	rolloutMu        sync.Mutex
+	lastReconciledPR string
 }
 
 // NewServer constructs a Mission-Control Gateway Server.
@@ -101,6 +104,8 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("GET /api/state", s.handleGetState)
 	mux.HandleFunc("POST /api/pipelineruns", s.handleCreatePipelineRun)
 	mux.HandleFunc("POST /api/push", s.handleCodePush)
+	mux.HandleFunc("POST /api/webhook/gitea", s.handleGiteaWebhook)
+	mux.HandleFunc("POST /api/deploy/rollout", s.handleDeployRollout)
 	mux.HandleFunc("POST /api/wave", s.handleLaunchWave)
 	mux.HandleFunc("POST /api/approvals/{name}", s.handleSetApprovalDecision)
 	mux.HandleFunc("GET /api/logs", s.handleGetLogs)
@@ -112,6 +117,25 @@ func NewServer(cfg Config) *Server {
 
 	s.handler = withSecurityHeaders(mux)
 	return s
+}
+
+// StartBackgroundReconciler periodically checks for newly succeeded PipelineRuns
+// and rolls out Deployment/fulfillment-tekton when a release pipeline completes cleanly.
+func (s *Server) StartBackgroundReconciler(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				rCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				s.reconcileSucceededPipelineDeployments(rCtx)
+				cancel()
+			}
+		}
+	}()
 }
 
 // Handler returns the HTTP handler for the server.
@@ -373,6 +397,7 @@ func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
 	snap.GitOCIAudit = s.fetchGitOCIAudit(ctx)
 	snap.RepoStatus = s.fetchRepoStatus(ctx)
 	snap.WowProofs = s.buildWowProofsView(&snap)
+	s.reconcileSucceededPipelineDeployments(ctx)
 
 	writeJSON(w, http.StatusOK, snap)
 }
@@ -1035,6 +1060,301 @@ func (s *Server) handleCodePush(w http.ResponseWriter, r *http.Request) {
 		"trigger":       trigger,
 		"triggeredRuns": createdRuns,
 	})
+}
+
+// GiteaWebhookPayload represents Gitea's push webhook JSON payload posted to POST /api/webhook/gitea.
+type GiteaWebhookPayload struct {
+	Ref        string `json:"ref"`
+	Before     string `json:"before"`
+	After      string `json:"after"`
+	Repository struct {
+		Name     string `json:"name"`
+		FullName string `json:"full_name"`
+		CloneURL string `json:"clone_url"`
+	} `json:"repository"`
+	HeadCommit struct {
+		ID      string `json:"id"`
+		Message string `json:"message"`
+	} `json:"head_commit"`
+}
+
+func (s *Server) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.TektonClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "Tekton client is not configured")
+		return
+	}
+
+	var payload GiteaWebhookPayload
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read Gitea webhook payload")
+		return
+	}
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON webhook payload: %v", err))
+			return
+		}
+	}
+
+	commitSHA := strings.TrimSpace(payload.After)
+	if commitSHA == "" || commitSHA == strings.Repeat("0", 40) {
+		commitSHA = strings.TrimSpace(payload.HeadCommit.ID)
+	}
+	if commitSHA == "" || commitSHA == strings.Repeat("0", 40) {
+		if st := s.fetchRepoStatus(r.Context()); st != nil && st.SHA != "" {
+			commitSHA = st.SHA
+		}
+	}
+
+	shortSHA := commitSHA
+	if len(shortSHA) > 7 {
+		shortSHA = shortSHA[:7]
+	}
+	if shortSHA == "" {
+		shortSHA = "latest"
+	}
+
+	suffix := fmt.Sprintf("%04d", time.Now().UnixNano()%10000)
+	runName := fmt.Sprintf("fulfillment-ci-%s-%s", strings.ToLower(sanitizeStepUID(shortSHA)), suffix)
+	imgTag := fmt.Sprintf("tekton-%s", strings.ToLower(sanitizeStepUID(shortSHA)))
+
+	pr := s.buildActorPipelineRun(runName, imgTag, false, false, false)
+	if pr.Annotations == nil {
+		pr.Annotations = map[string]string{}
+	}
+	pr.Annotations["tekton.ate.dev/git-commit"] = shortSHA
+	if commitSHA != "" {
+		pr.Annotations["tekton.ate.dev/git-revision"] = commitSHA
+		pr.Spec.Params = append(pr.Spec.Params, v1.Param{
+			Name:  "git-revision",
+			Value: *v1.NewStructuredValues(commitSHA),
+		})
+	}
+	if payload.Ref != "" {
+		pr.Annotations["tekton.ate.dev/git-ref"] = payload.Ref
+	}
+	pr.Labels["tekton.ate.dev/trigger"] = "gitea-webhook"
+
+	created, err := s.cfg.TektonClient.TektonV1().PipelineRuns(s.cfg.Namespace).Create(r.Context(), pr, metav1.CreateOptions{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("create PipelineRun from Gitea webhook: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":      "triggered",
+		"pipelineRun": created.Name,
+		"commit":      shortSHA,
+		"revision":    commitSHA,
+		"imageTag":    imgTag,
+		"ref":         payload.Ref,
+	})
+}
+
+// DeployRolloutRequest is the JSON request body for POST /api/deploy/rollout.
+type DeployRolloutRequest struct {
+	Commit string `json:"commit"`
+	Digest string `json:"digest"`
+	Tag    string `json:"tag,omitempty"`
+}
+
+func (s *Server) handleDeployRollout(w http.ResponseWriter, r *http.Request) {
+	var req DeployRolloutRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	commit := strings.TrimSpace(req.Commit)
+	digest := strings.TrimSpace(req.Digest)
+	if digest == "" {
+		writeError(w, http.StatusBadRequest, "digest is required")
+		return
+	}
+	tag := strings.TrimSpace(req.Tag)
+	if tag == "" {
+		tag = "tekton-latest"
+	}
+	if err := s.rolloutFulfillmentDeployment(r.Context(), commit, digest, tag); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "rolled-out",
+		"deployment": "fulfillment-tekton",
+		"commit":     commit,
+		"digest":     digest,
+		"tag":        tag,
+	})
+}
+
+func (s *Server) rolloutFulfillmentDeployment(ctx context.Context, shortSHA, blobDigest, ociTag string) error {
+	if s.cfg.KubeClient == nil {
+		return nil
+	}
+	shortSHA = strings.TrimSpace(shortSHA)
+	if len(shortSHA) > 7 {
+		shortSHA = shortSHA[:7]
+	}
+	blobDigest = strings.TrimSpace(blobDigest)
+	if blobDigest == "" {
+		return nil
+	}
+	if shortSHA == "" || shortSHA == "unknown" {
+		trimmed := strings.TrimPrefix(blobDigest, "sha256:")
+		if len(trimmed) >= 7 {
+			shortSHA = trimmed[:7]
+		} else {
+			shortSHA = "latest"
+		}
+	}
+	ociTag = strings.TrimSpace(ociTag)
+	if ociTag == "" {
+		ociTag = "tekton-latest"
+	}
+
+	s.rolloutMu.Lock()
+	defer s.rolloutMu.Unlock()
+
+	dep, err := s.cfg.KubeClient.AppsV1().Deployments(s.cfg.Namespace).Get(ctx, "fulfillment-tekton", metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	if dep.Spec.Template.Annotations == nil {
+		dep.Spec.Template.Annotations = map[string]string{}
+	}
+	if dep.Spec.Template.Annotations["fulfillment.ate.dev/commit"] == shortSHA &&
+		dep.Spec.Template.Annotations["fulfillment.ate.dev/digest"] == blobDigest {
+		return nil
+	}
+
+	dep.Spec.Template.Annotations["fulfillment.ate.dev/commit"] = shortSHA
+	dep.Spec.Template.Annotations["fulfillment.ate.dev/digest"] = blobDigest
+	dep.Spec.Template.Annotations["fulfillment.ate.dev/oci-tag"] = ociTag
+
+	for i := range dep.Spec.Template.Spec.Containers {
+		c := &dep.Spec.Template.Spec.Containers[i]
+		if c.Name == "fulfillment-api" || i == 0 {
+			c.Env = upsertEnvVar(c.Env, "BUILD_COMMIT", shortSHA)
+			c.Env = upsertEnvVar(c.Env, "OCI_BLOB_DIGEST", blobDigest)
+			c.Env = upsertEnvVar(c.Env, "OCI_TAG", ociTag)
+			c.Env = upsertEnvVar(c.Env, "DEPLOYED_BY", "tekton")
+		}
+	}
+
+	_, err = s.cfg.KubeClient.AppsV1().Deployments(s.cfg.Namespace).Update(ctx, dep, metav1.UpdateOptions{})
+	return err
+}
+
+func upsertEnvVar(envs []corev1.EnvVar, name, val string) []corev1.EnvVar {
+	for i := range envs {
+		if envs[i].Name == name {
+			envs[i].Value = val
+			return envs
+		}
+	}
+	return append(envs, corev1.EnvVar{Name: name, Value: val})
+}
+
+func (s *Server) reconcileSucceededPipelineDeployments(ctx context.Context) {
+	if s.cfg.TektonClient == nil || s.cfg.KubeClient == nil {
+		return
+	}
+	prList, err := s.cfg.TektonClient.TektonV1().PipelineRuns(s.cfg.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil || len(prList.Items) == 0 {
+		return
+	}
+
+	var newest *v1.PipelineRun
+	for i := range prList.Items {
+		pr := &prList.Items[i]
+		cond := pr.Status.GetCondition(apis.ConditionSucceeded)
+		if cond == nil || cond.Status != corev1.ConditionTrue {
+			continue
+		}
+		if newest == nil {
+			newest = pr
+			continue
+		}
+		tNew := newest.CreationTimestamp.Time
+		if newest.Status.CompletionTime != nil {
+			tNew = newest.Status.CompletionTime.Time
+		}
+		tCur := pr.CreationTimestamp.Time
+		if pr.Status.CompletionTime != nil {
+			tCur = pr.Status.CompletionTime.Time
+		}
+		if tCur.After(tNew) {
+			newest = pr
+		}
+	}
+	if newest == nil {
+		return
+	}
+
+	s.rolloutMu.Lock()
+	alreadyDone := s.lastReconciledPR == newest.Name
+	s.rolloutMu.Unlock()
+	if alreadyDone {
+		return
+	}
+
+	var imageDigest string
+	for _, r := range newest.Status.Results {
+		if r.Name == "image-digest" {
+			imageDigest = strings.TrimSpace(r.Value.StringVal)
+		}
+	}
+	if imageDigest == "" {
+		// Check package-and-publish TaskRun result directly as fallback.
+		if trList, trErr := s.cfg.TektonClient.TektonV1().TaskRuns(s.cfg.Namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("%s=%s", pipeline.PipelineRunLabelKey, newest.Name),
+		}); trErr == nil {
+			for i := range trList.Items {
+				tr := &trList.Items[i]
+				if tr.Labels[pipeline.PipelineTaskLabelKey] == "package-and-publish" {
+					for _, r := range tr.Status.Results {
+						if r.Name == "image-digest" {
+							imageDigest = strings.TrimSpace(r.Value.StringVal)
+						}
+					}
+				}
+			}
+		}
+	}
+	if imageDigest == "" {
+		return
+	}
+
+	shortSHA := strings.TrimSpace(newest.Annotations["tekton.ate.dev/git-commit"])
+	if shortSHA == "" {
+		if trList, trErr := s.cfg.TektonClient.TektonV1().TaskRuns(s.cfg.Namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("%s=%s", pipeline.PipelineRunLabelKey, newest.Name),
+		}); trErr == nil {
+			for i := range trList.Items {
+				tr := &trList.Items[i]
+				if tr.Labels[pipeline.PipelineTaskLabelKey] == "clone-and-build" {
+					for _, r := range tr.Status.Results {
+						if r.Name == "commit-sha" && len(strings.TrimSpace(r.Value.StringVal)) >= 7 {
+							shortSHA = strings.TrimSpace(r.Value.StringVal)[:7]
+						}
+					}
+				}
+			}
+		}
+	}
+	if shortSHA == "" {
+		if st := s.fetchRepoStatus(ctx); st != nil && len(st.SHA) >= 7 {
+			shortSHA = st.SHA[:7]
+		}
+	}
+
+	if err := s.rolloutFulfillmentDeployment(ctx, shortSHA, imageDigest, "tekton-latest"); err == nil {
+		s.rolloutMu.Lock()
+		s.lastReconciledPR = newest.Name
+		s.rolloutMu.Unlock()
+	}
 }
 
 // LaunchWaveAPIRequest is the JSON request body for POST /api/wave.

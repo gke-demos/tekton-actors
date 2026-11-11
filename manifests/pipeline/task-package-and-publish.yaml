@@ -6,10 +6,10 @@ metadata:
     app.kubernetes.io/part-of: tekton-actors
 spec:
   description: >-
-    Packages the verified fulfillment-api binary into a deterministic OCI Image v1
-    layer + config + manifest and pushes it to the in-cluster OCI Distribution v2
-    registry. Uses ate-placeholder in Actor mode (rewritten by atenet-egress) or
-    /workspace/creds/token in Pod+PVC mode.
+    Compiles the verified fulfillment-api binary with BuildCommit stamped via -ldflags,
+    uploads the raw binary blob and OCI v2 manifest (tekton-latest, tekton-<sha>, and
+    $(params.image-tag)) to the in-cluster OCI Distribution v2 registry, and triggers
+    a rolling update of Deployment/fulfillment-tekton.
   params:
     - name: registry-url
       type: string
@@ -47,7 +47,7 @@ spec:
       description: Optional mounted Git/OCI Secret workspace (bound in Pod+PVC mode; omitted in Actor mode).
   results:
     - name: image-digest
-      description: Immutable sha256 manifest digest returned by the OCI v2 registry.
+      description: Immutable sha256 blob digest of the published fulfillment-api binary artifact.
   steps:
     - name: build-and-push-oci
       image: golang:1.26-bookworm
@@ -69,18 +69,26 @@ spec:
           CRED_MODE="ate-egress"
         fi
 
-        # Refresh binary using warm GOCACHE so any hot-patched source files from a Rescue Actor
-        # are included in the published OCI artifact in milliseconds.
         cd "$(workspaces.source.path)/app"
-        mkdir -p "$(workspaces.source.path)/bin"
-        go build -trimpath -ldflags="-s -w" -o "$(workspaces.source.path)/bin/fulfillment-api" .
-
         COMMIT_SHA="unknown"
         if [ -f "$(workspaces.source.path)/.build-meta/commit-sha" ]; then
           COMMIT_SHA=$(cat "$(workspaces.source.path)/.build-meta/commit-sha")
         elif git rev-parse HEAD >/dev/null 2>&1; then
           COMMIT_SHA=$(git rev-parse HEAD)
         fi
+        SHORT_SHA="unknown"
+        if [ -f "$(workspaces.source.path)/.build-meta/short-sha" ]; then
+          SHORT_SHA=$(cat "$(workspaces.source.path)/.build-meta/short-sha")
+        elif git rev-parse --short=7 HEAD >/dev/null 2>&1; then
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+        elif [ "${COMMIT_SHA}" != "unknown" ]; then
+          SHORT_SHA=$(printf '%.7s' "${COMMIT_SHA}")
+        fi
+
+        # Refresh binary using warm GOCACHE so any hot-patched source files from a Rescue Actor
+        # are included in the published OCI artifact in milliseconds, with BuildCommit stamped.
+        mkdir -p "$(workspaces.source.path)/bin"
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.BuildCommit=${SHORT_SHA}" -o "$(workspaces.source.path)/bin/fulfillment-api" .
         BIN_SHA=$(sha256sum "$(workspaces.source.path)/bin/fulfillment-api" | awk '{print $1}')
 
         PUSH_SRC=$(mktemp "${TMPDIR:-/tmp}/oci-push-XXXXXX.go")
@@ -89,9 +97,7 @@ spec:
         package main
 
         import (
-        	"archive/tar"
         	"bytes"
-        	"compress/gzip"
         	"crypto/sha256"
         	"encoding/hex"
         	"encoding/json"
@@ -118,57 +124,32 @@ spec:
         	token := os.Args[5]
         	credMode := os.Args[6]
         	commitSHA := os.Args[7]
-        	binSHA := os.Args[8]
-        	testSummary := os.Args[9]
-        	secretPosture := os.Args[10]
-        	smokeStatus := os.Args[11]
-        	approvalDecision := os.Args[12]
-        	digestOut := os.Args[13]
+        	shortSHA := os.Args[8]
+        	binSHA := os.Args[9]
+        	testSummary := os.Args[10]
+        	secretPosture := os.Args[11]
+        	smokeStatus := os.Args[12]
+        	approvalDecision := os.Args[13]
+        	digestOut := os.Args[14]
 
         	binBytes, err := os.ReadFile(binPath)
         	if err != nil {
         		fatal("read binary: %v", err)
         	}
-
-        	var rawTar bytes.Buffer
-        	tw := tar.NewWriter(&rawTar)
-        	if err := tw.WriteHeader(&tar.Header{
-        		Name:     "fulfillment-api",
-        		Mode:     0o755,
-        		Size:     int64(len(binBytes)),
-        		ModTime:  time.Unix(0, 0).UTC(),
-        		Typeflag: tar.TypeReg,
-        	}); err != nil {
-        		fatal("tar header: %v", err)
-        	}
-        	if _, err := tw.Write(binBytes); err != nil {
-        		fatal("tar write: %v", err)
-        	}
-        	if err := tw.Close(); err != nil {
-        		fatal("tar close: %v", err)
-        	}
-        	diffSum := sha256.Sum256(rawTar.Bytes())
-        	diffID := "sha256:" + hex.EncodeToString(diffSum[:])
-
-        	var gzBuf bytes.Buffer
-        	gzw, _ := gzip.NewWriterLevel(&gzBuf, gzip.BestCompression)
-        	gzw.ModTime = time.Unix(0, 0).UTC()
-        	_, _ = gzw.Write(rawTar.Bytes())
-        	_ = gzw.Close()
-        	layerBytes := gzBuf.Bytes()
-        	layerSum := sha256.Sum256(layerBytes)
-        	layerDigest := "sha256:" + hex.EncodeToString(layerSum[:])
+        	binDigest := "sha256:" + binSHA
 
         	cfgObj := map[string]any{
         		"architecture": "amd64",
         		"os":           "linux",
+        		"commit":       shortSHA,
+        		"blobDigest":   binDigest,
         		"config": map[string]any{
-        			"Entrypoint":   []string{"/fulfillment-api"},
+        			"Entrypoint":   []string{"/tmp/fulfillment-api", "-listen", "0.0.0.0:8080"},
         			"ExposedPorts": map[string]any{"8080/tcp": map[string]any{}},
         		},
         		"rootfs": map[string]any{
         			"type":     "layers",
-        			"diff_ids": []string{diffID},
+        			"diff_ids": []string{binDigest},
         		},
         	}
         	cfgBytes, _ := json.Marshal(cfgObj)
@@ -177,11 +158,13 @@ spec:
 
         	client := &http.Client{Timeout: 60 * time.Second}
         	uploadBlob(client, baseURL, repo, token, credMode, cfgDigest, cfgBytes)
-        	uploadBlob(client, baseURL, repo, token, credMode, layerDigest, layerBytes)
+        	uploadBlob(client, baseURL, repo, token, credMode, binDigest, binBytes)
 
         	manifest := map[string]any{
         		"schemaVersion": 2,
         		"mediaType":     "application/vnd.oci.image.manifest.v1+json",
+        		"blobDigest":    binDigest,
+        		"commit":        shortSHA,
         		"config": descriptor{
         			MediaType: "application/vnd.oci.image.config.v1+json",
         			Digest:    cfgDigest,
@@ -189,13 +172,14 @@ spec:
         		},
         		"layers": []descriptor{
         			{
-        				MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
-        				Digest:    layerDigest,
-        				Size:      int64(len(layerBytes)),
+        				MediaType: "application/octet-stream",
+        				Digest:    binDigest,
+        				Size:      int64(len(binBytes)),
         			},
         		},
         		"annotations": map[string]string{
         			"org.opencontainers.image.revision": commitSHA,
+        			"dev.ate.tekton.commit-short":       shortSHA,
         			"dev.ate.tekton.binary-sha256":      binSHA,
         			"dev.ate.tekton.test-summary":       testSummary,
         			"dev.ate.tekton.secret-posture":     secretPosture,
@@ -205,6 +189,29 @@ spec:
         	}
         	manifestBytes, _ := json.MarshalIndent(manifest, "", "  ")
 
+        	tags := []string{tag}
+        	seen := map[string]bool{tag: true}
+        	for _, extra := range []string{"tekton-latest", "tekton-" + shortSHA} {
+        		if extra != "" && extra != "tekton-unknown" && !seen[extra] {
+        			seen[extra] = true
+        			tags = append(tags, extra)
+        		}
+        	}
+
+        	for _, t := range tags {
+        		putManifest(client, baseURL, repo, t, token, credMode, manifestBytes)
+        	}
+
+        	if err := os.WriteFile(digestOut, []byte(binDigest), 0o644); err != nil {
+        		fatal("write digest result: %v", err)
+        	}
+        	fmt.Printf("==> Published OCI binary artifact %s/v2/%s (tags=%v, blobDigest=%s, commit=%s, authMode=%s)\n",
+        		baseURL, repo, tags, binDigest, shortSHA, credMode)
+
+        	triggerGatewayRollout(shortSHA, binDigest)
+        }
+
+        func putManifest(client *http.Client, baseURL, repo, tag, token, credMode string, manifestBytes []byte) {
         	putURL := fmt.Sprintf("%s/v2/%s/manifests/%s", baseURL, repo, tag)
         	req, err := http.NewRequest(http.MethodPut, putURL, bytes.NewReader(manifestBytes))
         	if err != nil {
@@ -216,23 +223,39 @@ spec:
 
         	resp, err := client.Do(req)
         	if err != nil {
-        		fatal("PUT manifest: %v", err)
+        		fatal("PUT manifest %s: %v", tag, err)
         	}
         	body, _ := io.ReadAll(resp.Body)
         	resp.Body.Close()
         	if resp.StatusCode != http.StatusCreated {
-        		fatal("PUT manifest status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+        		fatal("PUT manifest %s status %d: %s", tag, resp.StatusCode, strings.TrimSpace(string(body)))
         	}
-        	manifestDigest := strings.TrimSpace(resp.Header.Get("Docker-Content-Digest"))
-        	if manifestDigest == "" {
-        		sum := sha256.Sum256(manifestBytes)
-        		manifestDigest = "sha256:" + hex.EncodeToString(sum[:])
+        }
+
+        func triggerGatewayRollout(shortSHA, binDigest string) {
+        	gatewayURL := os.Getenv("TEKTON_ACTORS_GATEWAY_URL")
+        	if gatewayURL == "" {
+        		gatewayURL = "http://tekton-actors-gateway.tekton-actors.svc.cluster.local"
         	}
-        	if err := os.WriteFile(digestOut, []byte(manifestDigest), 0o644); err != nil {
-        		fatal("write digest result: %v", err)
+        	payload, _ := json.Marshal(map[string]string{
+        		"commit": shortSHA,
+        		"digest": binDigest,
+        		"tag":    "tekton-latest",
+        	})
+        	c := &http.Client{Timeout: 4 * time.Second}
+        	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(gatewayURL, "/")+"/api/deploy/rollout", bytes.NewReader(payload))
+        	if err != nil {
+        		return
         	}
-        	fmt.Printf("==> Published OCI image %s/v2/%s:%s (%s, authMode=%s)\n",
-        		baseURL, repo, tag, manifestDigest, credMode)
+        	req.Header.Set("Content-Type", "application/json")
+        	resp, err := c.Do(req)
+        	if err != nil {
+        		return
+        	}
+        	defer resp.Body.Close()
+        	if resp.StatusCode == http.StatusOK {
+        		fmt.Printf("==> Triggered Deployment/fulfillment-tekton rollout (commit=%s, digest=%s)\n", shortSHA, binDigest)
+        	}
         }
 
         func uploadBlob(client *http.Client, baseURL, repo, token, credMode, digest string, data []byte) {
@@ -306,6 +329,7 @@ spec:
           "${AUTH_TOKEN}" \
           "${CRED_MODE}" \
           "${COMMIT_SHA}" \
+          "${SHORT_SHA}" \
           "${BIN_SHA}" \
           "$(params.test-summary)" \
           "$(params.secret-posture)" \

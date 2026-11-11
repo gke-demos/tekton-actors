@@ -36,7 +36,7 @@ const (
 	// restoring exact discount subtraction in CalculateTotal.
 	SampleAppRepoFixDiff = `--- a/pricing.go
 +++ b/pricing.go
-@@ -46,5 +46,5 @@
+@@ -53,5 +53,5 @@
  	if discountCents >= subtotalCents {
  		return 0
  	}
@@ -49,7 +49,7 @@ const (
 	// accepted directly by Step Supervisor's POST /v1/rescue/patch endpoint on a Rescue Actor.
 	SampleAppWorkspaceFixDiff = `--- a/source/app/pricing.go
 +++ b/source/app/pricing.go
-@@ -46,5 +46,5 @@
+@@ -53,5 +53,5 @@
  	if discountCents >= subtotalCents {
  		return 0
  	}

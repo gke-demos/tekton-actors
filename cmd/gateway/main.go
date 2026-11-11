@@ -79,6 +79,7 @@ func main() {
 		ControlClient:  controlClient,
 		RescueService:  rescueService,
 	})
+	srv.StartBackgroundReconciler(ctx)
 
 	httpServer := &http.Server{
 		Addr:              *listenAddr,

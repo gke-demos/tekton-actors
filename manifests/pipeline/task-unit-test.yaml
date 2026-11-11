@@ -6,7 +6,8 @@ metadata:
     app.kubernetes.io/part-of: tekton-actors
 spec:
   description: >-
-    Runs offline Go unit tests against /workspace/source/app reusing the warm GOCACHE.
+    Runs offline Go unit tests (TestCalculateTotal, TestCalculateQuote, TestServerEndpoints)
+    against /workspace/source/app reusing the warm GOCACHE.
   workspaces:
     - name: source
       description: Shared pipeline workspace containing cloned source and warm GOCACHE.
@@ -29,7 +30,7 @@ spec:
         cd "$(workspaces.source.path)/app"
         TMP_LOG=$(mktemp)
         echo "==> Running unit tests in $(workspaces.source.path)/app"
-        if ! go test -v ./... > "${TMP_LOG}" 2>&1; then
+        if ! go test -v -run 'TestCalculate|TestServer' ./... > "${TMP_LOG}" 2>&1; then
           cat "${TMP_LOG}"
           rm -f "${TMP_LOG}"
           exit 1

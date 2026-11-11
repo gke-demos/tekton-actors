@@ -26,6 +26,10 @@ spec:
       type: string
       default: latest
       description: Target OCI image tag.
+    - name: git-revision
+      type: string
+      default: ""
+      description: Optional Git commit SHA or ref to check out after fetching.
     - name: inject-bug
       type: string
       default: "false"
@@ -68,6 +72,8 @@ spec:
       params:
         - name: git-url
           value: $(params.git-url)
+        - name: git-revision
+          value: $(params.git-revision)
         - name: inject-bug
           value: $(params.inject-bug)
       workspaces:

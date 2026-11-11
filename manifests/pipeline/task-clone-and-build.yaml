@@ -7,14 +7,18 @@ metadata:
 spec:
   description: >-
     Clones fulfillment-api from the in-cluster Git Smart-HTTP server, warms GOCACHE
-    inside the shared workspace, and builds a static Linux binary. Supports both
-    per-Actor EgressPolicy credential injection (zero ambient secrets) and mounted
-    Secret workspaces (Pod+PVC baseline).
+    inside the shared workspace, and builds a static Linux binary with BuildCommit
+    stamped via -ldflags. Supports both per-Actor EgressPolicy credential injection
+    (zero ambient secrets) and mounted Secret workspaces (Pod+PVC baseline).
   params:
     - name: git-url
       type: string
       default: http://git-oci.demo-repo.svc.cluster.local/repo/fulfillment-api.git
       description: Git Smart-HTTP URL of the repository to build.
+    - name: git-revision
+      type: string
+      default: ""
+      description: Optional Git commit SHA or ref to check out after fetching.
     - name: inject-bug
       type: string
       default: "false"
@@ -89,14 +93,26 @@ spec:
         fi
 
         cd "$(workspaces.source.path)/app"
-        COMMIT_SHA=$(git rev-parse HEAD)
+        if [ -n "$(params.git-revision)" ] && [ "$(params.inject-bug)" != "true" ]; then
+          REV="$(params.git-revision)"
+          echo "==> Checking out requested git-revision ${REV}"
+          GIT_TERMINAL_PROMPT=0 git \
+            -c "http.extraHeader=Authorization: Bearer ${AUTH_TOKEN}" \
+            -c "http.extraHeader=X-Tekton-Credential-Mode: ${CRED_MODE}" \
+            fetch --depth=1 origin "${REV}" >/dev/null 2>&1 || true
+          git checkout --force "${REV}" >/dev/null 2>&1 || true
+        fi
 
-        echo "==> Building fulfillment-api at commit ${COMMIT_SHA} (cachePosture=${CACHE_POSTURE})"
-        go build -trimpath -ldflags="-s -w" -o "$(workspaces.source.path)/bin/fulfillment-api" .
+        COMMIT_SHA=$(git rev-parse HEAD)
+        SHORT_SHA=$(git rev-parse --short=7 HEAD)
+
+        echo "==> Building fulfillment-api at commit ${COMMIT_SHA} (short=${SHORT_SHA}, cachePosture=${CACHE_POSTURE})"
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.BuildCommit=${SHORT_SHA}" -o "$(workspaces.source.path)/bin/fulfillment-api" .
         BIN_SHA=$(sha256sum "$(workspaces.source.path)/bin/fulfillment-api" | awk '{print $1}')
 
         printf '%s' "${COMMIT_SHA}" > "$(workspaces.source.path)/.build-meta/commit-sha"
+        printf '%s' "${SHORT_SHA}" > "$(workspaces.source.path)/.build-meta/short-sha"
         printf '%s' "${CACHE_POSTURE}" > "$(workspaces.source.path)/.build-meta/cache-posture"
         printf '%s' "${COMMIT_SHA}" > "$(results.commit-sha.path)"
         printf '%s' "${BIN_SHA}" > "$(results.binary-sha256.path)"
-        echo "==> Built fulfillment-api (commit=${COMMIT_SHA}, sha256=${BIN_SHA}, cachePosture=${CACHE_POSTURE})"
+        echo "==> Built fulfillment-api (commit=${COMMIT_SHA}, short=${SHORT_SHA}, sha256=${BIN_SHA}, cachePosture=${CACHE_POSTURE})"

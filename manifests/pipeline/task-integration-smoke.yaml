@@ -6,8 +6,9 @@ metadata:
     app.kubernetes.io/part-of: tekton-actors
 spec:
   description: >-
-    Boots the compiled fulfillment-api binary on loopback inside the isolated
-    sandbox and exercises /healthz and /api/quote over HTTP.
+    Runs end-to-end HTTP tests (TestEndToEndLiveHTTPServer) and boots the compiled
+    fulfillment-api binary on loopback inside the isolated Actor sandbox to verify
+    /, /healthz, and /api/quote over HTTP.
   workspaces:
     - name: source
       description: Shared pipeline workspace containing compiled bin/fulfillment-api.
@@ -26,6 +27,12 @@ spec:
         export GOSUMDB=off
         export GOTOOLCHAIN=local
         export CGO_ENABLED=0
+
+        if [ -d "$(workspaces.source.path)/app" ]; then
+          cd "$(workspaces.source.path)/app"
+          echo "==> Running E2E live HTTP server test suite (TestEndToEndLiveHTTPServer)"
+          go test -v -run 'TestEndToEndLiveHTTPServer' ./...
+        fi
 
         SMOKE_SRC=$(mktemp "${TMPDIR:-/tmp}/smoke-XXXXXX.go")
         trap 'rm -f "${SMOKE_SRC}"' EXIT
@@ -114,7 +121,7 @@ spec:
         		os.Exit(1)
         	}
 
-        	status := fmt.Sprintf("ok (healthz=200, quote=%d cents)", quote.TotalCents)
+        	status := fmt.Sprintf("ok (e2e=PASS, healthz=200, quote=%d cents)", quote.TotalCents)
         	if err := os.WriteFile(resultPath, []byte(status), 0o644); err != nil {
         		fmt.Fprintf(os.Stderr, "write smoke-status: %v\n", err)
         		os.Exit(1)

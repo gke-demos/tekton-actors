@@ -26,7 +26,7 @@ rules:
     verbs: ["create"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["ate.dev"]
     resources: ["workerpools", "sandboxconfigs"]
     verbs: ["get", "list", "watch"]

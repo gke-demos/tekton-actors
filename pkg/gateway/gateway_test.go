@@ -24,10 +24,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	fakekube "k8s.io/client-go/kubernetes/fake"
+	"knative.dev/pkg/apis"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 )
 
 type fakeControlClient struct {
@@ -480,4 +483,127 @@ func TestGateway_RESTStateAndPipelineRunAndApprovalAndRescue(t *testing.T) {
 		t.Fatalf("resumed skipTasks = %v, want [clone-and-build]", foundResumed.Spec.Workspaces[0].Actor.SkipTasks)
 	}
 	_ = runtime.SchemeBuilder{}
+}
+
+func TestGateway_GiteaWebhookAndDeploymentRollout(t *testing.T) {
+	ctx := context.Background()
+
+	fulfillmentDeploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "fulfillment-tekton",
+			Namespace: "tekton-actors",
+		},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"fulfillment.ate.dev/commit": "initial",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "fulfillment-api",
+							Image: "docker.io/gitea/gitea:1.22.6-rootless",
+							Env: []corev1.EnvVar{
+								{Name: "DEPLOYED_BY", Value: "tekton"},
+								{Name: "OCI_TAG", Value: "tekton-latest"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	kubeClient := fakekube.NewSimpleClientset(fulfillmentDeploy)
+	tektonClient := faketekton.NewSimpleClientset()
+	controlClient := newFakeControlClient()
+
+	srv := NewServer(Config{
+		Namespace:     "tekton-actors",
+		Atespace:      "tekton-actors",
+		KubeClient:    kubeClient,
+		TektonClient:  tektonClient,
+		ControlClient: controlClient,
+	})
+
+	// 1. Trigger POST /api/webhook/gitea with a Gitea push event payload.
+	webhookBody := bytes.NewBufferString(`{
+		"ref": "refs/heads/main",
+		"before": "0000000000000000000000000000000000000000",
+		"after": "e548486369b86c57bc06678950068255253f10bc",
+		"repository": {
+			"name": "fulfillment-api",
+			"full_name": "substrate/fulfillment-api"
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook/gitea", webhookBody)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /api/webhook/gitea status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var hookResp struct {
+		Status      string `json:"status"`
+		PipelineRun string `json:"pipelineRun"`
+		Commit      string `json:"commit"`
+		Revision    string `json:"revision"`
+		ImageTag    string `json:"imageTag"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&hookResp); err != nil {
+		t.Fatalf("decode webhook response: %v", err)
+	}
+	if hookResp.Status != "triggered" || hookResp.Commit != "e548486" || hookResp.ImageTag != "tekton-e548486" {
+		t.Fatalf("unexpected webhook response: %+v", hookResp)
+	}
+
+	createdPR, err := tektonClient.TektonV1().PipelineRuns("tekton-actors").Get(ctx, hookResp.PipelineRun, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get created PipelineRun %s: %v", hookResp.PipelineRun, err)
+	}
+	if createdPR.Annotations["tekton.ate.dev/git-commit"] != "e548486" {
+		t.Fatalf("createdPR annotation git-commit = %q, want e548486", createdPR.Annotations["tekton.ate.dev/git-commit"])
+	}
+
+	// 2. Simulate the PipelineRun completing with Succeeded=True and image-digest result.
+	wantDigest := "sha256:9f29855e97523f67298cf896a38215c25852f004d2f9b111600c9f01be48d111"
+	createdPR.Status.Status = duckv1.Status{
+		Conditions: duckv1.Conditions{
+			{
+				Type:   apis.ConditionSucceeded,
+				Status: corev1.ConditionTrue,
+				Reason: "Succeeded",
+			},
+		},
+	}
+	createdPR.Status.Results = []v1.PipelineRunResult{
+		{
+			Name:  "image-digest",
+			Value: *v1.NewStructuredValues(wantDigest),
+		},
+	}
+	if _, err := tektonClient.TektonV1().PipelineRuns("tekton-actors").Update(ctx, createdPR, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update PipelineRun status: %v", err)
+	}
+
+	// 3. Call GET /api/state (which invokes reconcileSucceededPipelineDeployments) and verify Deployment/fulfillment-tekton rolled out!
+	req = httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/state status = %d", rec.Code)
+	}
+
+	dep, err := kubeClient.AppsV1().Deployments("tekton-actors").Get(ctx, "fulfillment-tekton", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Deployment/fulfillment-tekton: %v", err)
+	}
+	if got := dep.Spec.Template.Annotations["fulfillment.ate.dev/commit"]; got != "e548486" {
+		t.Fatalf("Deployment commit annotation = %q, want e548486", got)
+	}
+	if got := dep.Spec.Template.Annotations["fulfillment.ate.dev/digest"]; got != wantDigest {
+		t.Fatalf("Deployment digest annotation = %q, want %s", got, wantDigest)
+	}
 }

@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+// PromoBanner is surfaced on GET / so live code edits in Gitea or terminal
+// are immediately visible across fulfillment-flux, fulfillment-argo, and fulfillment-tekton.
+const PromoBanner = "Agent Substrate v1.0.0 — High-Density gVisor Actor Runtime"
+
+// EnterpriseDiscountBps controls the enterprise tier discount in basis points (1500 = 15.00%).
+const EnterpriseDiscountBps = 1500
+
 // LineItem represents a single order item in cents.
 type LineItem struct {
 	SKU       string `json:"sku"`
@@ -31,7 +38,7 @@ func DiscountBpsForTier(tier string) (int, string, error) {
 	case "partner":
 		return 1000, "partner", nil
 	case "enterprise":
-		return 1500, "enterprise", nil
+		return EnterpriseDiscountBps, "enterprise", nil
 	default:
 		return 0, "", fmt.Errorf("unsupported customer tier %q", tier)
 	}
